@@ -96,6 +96,7 @@ class Section:
     tables: dict[str, pl.DataFrame] = field(default_factory=dict)
     figures: list[str] = field(default_factory=list)  # file names inside run_dir
     notes: list[str] = field(default_factory=list)
+    captions: dict[str, str] = field(default_factory=dict)  # table name -> one paragraph under its heading
 
 
 @dataclass

@@ -17,6 +17,44 @@ from boost.types import RunContext, Section
 
 SIDES = (("H", "odds_home", "book_h"), ("D", "odds_draw", "book_d"), ("A", "odds_away", "book_a"))
 
+# Betting terms for the run page tooltips. Core supplies the generic ones.
+GLOSSARY = {
+    "H": "Home win.",
+    "D": "Draw.",
+    "A": "Away win.",
+    "ev_threshold": "Minimum expected value to place a bet. Expected value is model probability times decimal odds minus 1: the profit per unit staked if the model's probability were exactly right. 0 means bet whenever the model thinks the price is fair or better.",
+    "bets": "Number of bets placed (at most one per match, on the side with the highest expected value).",
+    "matches": "Matches available to bet on, i.e. with valid prices.",
+    "hit_rate": "Fraction of bets that won. On its own it means little: backing long shots wins rarely but pays a lot.",
+    "avg_odds": "Average decimal odds of the bets placed. Decimal odds of 3.0 return 3 units for a 1 unit stake if the bet wins, so a profit of 2.",
+    "avg_model_p": "Average probability the model gave to the sides it backed.",
+    "avg_book_p": "Average probability implied by the odds on the sides backed (1 divided by the odds).",
+    "profit": "Total units won or lost, with 1 unit staked per bet.",
+    "roi": "Return on investment: profit divided by total stake, i.e. average profit per unit bet. -0.05 means you lose 5p per pound staked.",
+    "roi_ci_lo": "Lower end of a 95% bootstrap confidence interval for roi. Resamples the bets many times to see how much the roi could move by luck.",
+    "roi_ci_hi": "Upper end of that interval. If the interval contains zero, the result is consistent with no edge at all.",
+    "max_drawdown": "The largest fall in units from a running peak to a later trough. How much you would have been down at the worst moment.",
+    "bets_H": "Bets placed on home wins.",
+    "bets_D": "Bets placed on draws.",
+    "bets_A": "Bets placed on away wins.",
+    "strategy": "A rule for what to bet on with no model at all, as a sanity check.",
+    "always H": "Back the home side in every match at the closing price.",
+    "always D": "Back the draw in every match.",
+    "always A": "Back the away side in every match.",
+    "book favourite": "Back whichever side the bookmaker makes most likely.",
+    "side": "Which outcome was backed.",
+    "odds_band": "Bets grouped by the decimal odds taken.",
+    "odds_source": "Which bookmaker or exchange the closing prices come from. Bet365 prices carry a 3 to 5% margin; the Betfair exchange under 1%.",
+    "model_minus_book": "The model's probability minus the bookmaker's, for one side of one match, grouped into bands.",
+    "model_p": "Average model probability in the band.",
+    "book_p": "Average bookmaker probability in the band (margin removed).",
+    "closer_to": "Whether the observed frequency in this band sits nearer the model's number or the bookmaker's. If it is always 'book', the model's disagreements with the market are noise.",
+    "final_bankroll": "Where a bankroll that started at 1.0 ended after staking a fraction of it on every positive-value bet.",
+    "avg_stake_frac": "Average fraction of the bankroll staked per bet.",
+    "max_drawdown_frac": "Largest fractional fall of the bankroll from a peak. 0.5 means it halved at some point.",
+    "season": "Premier League season, August to May.",
+}
+
 
 def _arrays(pred: pl.DataFrame) -> dict[str, np.ndarray]:
     P = pred.select(["p_H", "p_D", "p_A"]).to_numpy()
@@ -177,17 +215,25 @@ def evaluate(ctx: RunContext) -> list[Section]:
     ax.axhline(0, color="#999", lw=0.8)
     ax.set_xlabel("test match (time order)"); ax.set_ylabel("units"); ax.set_title("Flat-stake equity, 1 unit per bet"); ax.legend()
     sections.append(Section("Betting: flat stakes", {"By EV threshold": strat, "No-model baselines": blind}, [save_fig(fig, ctx.run_dir, "equity.png")], [
-        "One bet per match on the side with the highest expected value (model p × odds − 1), when that EV clears the threshold. Stake 1 unit.",
-        "`roi` is mean profit per unit staked; `roi_ci_lo/hi` is a 95% bootstrap interval over the bets placed. An interval that includes zero is not evidence of an edge.",
+        "This section asks the practical question: if you had bet 1 unit whenever the model thought the price was good, what would have happened? Test rows only, in time order.",
+        "Expected value of a bet is model probability times decimal odds minus 1. It is the profit per unit you would expect if the model's probability were exactly right. The model bets on the side with the highest expected value in each match, if that clears the threshold.",
         "Odds are closing prices. Betting at these prices assumes you can get the close, which for an exchange is optimistic.",
-    ]))
+    ], {
+        "By EV threshold": "One row per threshold. `roi` is the average profit per unit staked and is the number that matters. `roi_ci_lo` and `roi_ci_hi` bound how much luck could move it; if that range includes zero the result is consistent with no edge.",
+        "No-model baselines": "What blind rules return at the same prices. The bookmaker's margin makes all of these negative. A model has to beat these, not zero, to be adding anything.",
+    }))
 
     sections.append(Section(f"Betting: breakdown at EV > {mid:.2f}", {
         "By side": _by_side(a, mid),
         "By season": _by_group(a, pred["season"].to_numpy().astype(str), mid, "season") if "season" in pred.columns else pl.DataFrame(),
         "By book source": _by_group(a, pred["odds_source"].to_numpy().astype(str), mid, "odds_source") if "odds_source" in pred.columns else pl.DataFrame(),
         "By odds band": _by_group(a, np.array([f"{lo:.1f}-{hi:.1f}" for lo, hi in zip(*_odds_band(_bets(a, mid)["odds"]))]), mid, "odds_band"),
-    }, [], []))
+    }, [], [f"The EV > {mid:.2f} strategy from the table above, cut different ways. Small `bets` counts make `roi` unreliable."], {
+        "By side": "Is the model's supposed edge concentrated on home wins, draws or away wins? Draws and away wins are longer prices, so a few winners move roi a lot.",
+        "By season": "Does the edge hold up season after season, or was it one good year? A real edge is consistent in sign, not necessarily in size.",
+        "By book source": "Bet365 prices carry a bigger margin than the Betfair exchange, so the same model can look worse in the exchange era simply because the bar is higher.",
+        "By odds band": "Bets grouped by the price taken. Models often look profitable only at long odds, where a handful of winners dominates and the confidence interval is widest.",
+    }))
 
     edge = _edge_reliability(a)
     equity, kstats = _kelly(a, kelly_frac)
@@ -199,8 +245,11 @@ def evaluate(ctx: RunContext) -> list[Section]:
         "Edge reliability": edge,
         "Fractional Kelly": pl.DataFrame([kstats]),
     }, [save_fig(fig, ctx.run_dir, "kelly.png")], [
-        "Edge reliability bins every (match, side) by model probability minus book probability. If `observed` tracks `model_p` in the outer bins, the disagreement carries information. If it tracks `book_p`, the model is noise around the book.",
-    ]))
+        "The betting ledger can be swamped by luck. This section asks the underlying question directly: when the model and the bookmaker disagree, who is right?",
+    ], {
+        "Edge reliability": "Every (match, side) pair is put in a band by how far the model's probability sits from the bookmaker's. Within each band, `observed` is how often that side actually happened. If observed follows `model_p` in the outer bands, the model's disagreements carry information. If it follows `book_p`, they are noise.",
+        "Fractional Kelly": "A staking rule that bets a fraction of the bankroll proportional to the expected value. It compounds, so a real edge grows the bankroll and a fake one shrinks it fast. `final_bankroll` below 1 means a loss.",
+    }))
     return sections
 
 

@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
+from boost.glossary import GLOSSARY as CORE_GLOSSARY
 from boost.metrics import calibration_table, class_balance, period_table
 from boost.project import Project
 from boost.store import list_runs, load_meta, load_predictions
@@ -42,7 +43,7 @@ def save_fig(fig: plt.Figure, run_dir: Path, name: str) -> str:
 def _summary_section(meta: dict[str, Any], curve: pl.DataFrame, task: Task) -> Section:
     metrics = meta.get("metrics") or {}
     keys = list(dict.fromkeys(k for split in metrics.values() for k in split))
-    rows = [{"metric": k, **{split: metrics[split].get(k) for split in metrics}} for k in keys]
+    rows = [{"metric": k, **{split: metrics[split].get(k) for split in metrics}, "meaning": METRIC_MEANING.get(k, "")} for k in keys]
     folds = pl.DataFrame(meta.get("folds") or [])
     notes = []
     if meta.get("description"):
@@ -53,7 +54,26 @@ def _summary_section(meta: dict[str, Any], curve: pl.DataFrame, task: Task) -> S
         f"Task: {task.type} on `{task.target}`" + (f", classes {list(task.class_names)}" if task.class_names else ""),
         f"Rows {meta.get('rows')}, features {meta.get('n_features')}, folds {len(meta.get('folds') or [])}, {meta.get('seconds')} s.",
     ]
-    return Section("Summary", {"Metrics": pl.DataFrame(rows), "Folds": folds}, [], notes + _how_to_read(task, bool(meta.get("baseline"))))
+    captions = {
+        "Metrics": "One row per score, one column per split. `valid` rows were held back from training to decide when to stop adding trees; `test` rows were never seen at all and are the honest number. Hover any heading or row label for a definition.",
+        "Folds": "How the rows were divided. A holdout run has one fold; a walk-forward run has one per period, each retrained on everything before it. `best_iteration` is how many trees were kept; 1 means the model found nothing worth adding.",
+    }
+    return Section("Summary", {"Metrics": pl.DataFrame(rows), "Folds": folds}, [], notes + _how_to_read(task, bool(meta.get("baseline"))), captions)
+
+
+METRIC_MEANING = {
+    "n": "rows scored",
+    "logloss": "lower is better; 1.099 is guessing three ways equally",
+    "brier": "lower is better; 0 is perfect",
+    "accuracy": "higher is better, but ignores confidence",
+    "baseline_n": "rows where the comparison forecast exists",
+    "baseline_logloss": "the comparison forecast's logloss; lower is better",
+    "model_logloss_on_baseline_rows": "our logloss on those same rows",
+    "model_minus_baseline": "negative = we beat the comparison; positive = it beat us",
+    "rmse": "lower is better, target units",
+    "mae": "lower is better, target units",
+    "poisson_deviance": "lower is better",
+}
 
 
 def _how_to_read(task: Task, has_baseline: bool) -> list[str]:
@@ -105,7 +125,10 @@ def _calibration_section(task: Task, pred: pl.DataFrame, run_dir: Path) -> Secti
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
         ax.set_title(f"class {name}")
         ax.set_xlabel("predicted"); ax.set_ylabel("observed" if k == 0 else "")
-    return Section("Calibration (test rows)", {"Class balance": balance, "Reliability": table}, [save_fig(fig, run_dir, "calibration.png")], ["Points on the diagonal mean the probabilities are honest. Bubble size is bin count."])
+    return Section("Calibration (test rows)", {"Class balance": balance, "Reliability": table}, [save_fig(fig, run_dir, "calibration.png")], ["Points on the diagonal mean the probabilities are honest. Bubble size is bin count."], {
+        "Class balance": "For each outcome: how often it happened, the average probability the model gave it, and how often the model made it the favourite. If mean_pred matches observed_rate the model has the overall rates right.",
+        "Reliability": "Rows are grouped by the probability the model gave a class. Within each group, `observed` is how often that class really happened. An honest model has observed close to mean_pred in every group; `gap` is the difference.",
+    })
 
 
 def _period_section(task: Task, pred: pl.DataFrame, period_col: str, baseline: list[str], run_dir: Path) -> Section:
@@ -123,7 +146,9 @@ def _period_section(task: Task, pred: pl.DataFrame, period_col: str, baseline: l
         ax.set_ylim(max(0.0, lo - 0.05), None)
         ax.set_ylabel("logloss"); ax.set_title(f"Test logloss by {period_col}"); ax.legend()
         figs.append(save_fig(fig, run_dir, "periods.png"))
-    return Section(f"By {period_col} (test rows)", {"Periods": table}, figs, [])
+    return Section(f"By {period_col} (test rows)", {"Periods": table}, figs, [], {
+        "Periods": f"The test scores split by {period_col}. Look for whether `model_minus_baseline` is consistently one sign or just bouncing around zero. A gap that only appears in one {period_col} is probably noise.",
+    })
 
 
 def _importance_section(importance: pl.DataFrame, run_dir: Path, top: int = 30) -> Section:
@@ -131,7 +156,9 @@ def _importance_section(importance: pl.DataFrame, run_dir: Path, top: int = 30) 
     fig, ax = plt.subplots(figsize=(7, max(3.0, 0.22 * head.height)))
     ax.barh(head["feature"].to_list()[::-1], head["gain_share"].to_list()[::-1], color=PALETTE[0])
     ax.set_xlabel("share of total gain"); ax.set_title(f"Top {head.height} features by gain")
-    return Section("Feature importance", {"Importance": head}, [save_fig(fig, run_dir, "importance.png")], ["Gain is how much each feature reduced the training loss across all splits. Averaged over folds."])
+    return Section("Feature importance", {"Importance": head}, [save_fig(fig, run_dir, "importance.png")], ["Gain is how much each feature reduced the training loss across all splits. Averaged over folds."], {
+        "Importance": "Which inputs the trees actually used. `gain_share` sums to 1 down the full list. Importance says what the model leaned on, not whether that input is any good out of sample; a feature can rank high and still hurt the test score.",
+    })
 
 
 def core_sections(project: Project, run_dir: Path, meta: dict[str, Any], pred: pl.DataFrame, task: Task) -> list[Section]:
@@ -174,22 +201,59 @@ def _fmt(v: Any) -> str:
     return html.escape(str(v))
 
 
-def table_html(df: pl.DataFrame) -> str:
+def _tip(text: str, glossary: dict[str, str]) -> str:
+    """Wrap a heading or row label in a tooltip span when the glossary knows it."""
+    key = str(text)
+    definition = glossary.get(key) or glossary.get(key.lower())
+    if definition is None:
+        return html.escape(key)
+    return f"<span class='tip' data-tip='{html.escape(definition, quote=True)}'>{html.escape(key)}</span>"
+
+
+def table_html(df: pl.DataFrame, glossary: dict[str, str] | None = None) -> str:
     if df.height == 0:
         return "<p class='muted'>empty</p>"
-    head = "".join(f"<th>{html.escape(c)}</th>" for c in df.columns)
-    body = "".join("<tr>" + "".join(f"<td>{_fmt(v)}</td>" for v in row) + "</tr>" for row in df.iter_rows())
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    g = glossary or {}
+    head = "".join(f"<th>{_tip(c, g)}</th>" for c in df.columns)
+    rows = []
+    for row in df.iter_rows():
+        first, rest = row[0], row[1:]
+        cells = [f"<td>{_tip(first, g) if isinstance(first, str) else _fmt(first)}</td>"] + [
+            f"<td class='txt'>{_fmt(v)}</td>" if isinstance(v, str) and len(v) > 12 else f"<td>{_fmt(v)}</td>" for v in rest
+        ]
+        rows.append("<tr>" + "".join(cells) + "</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
-def _section_html(s: Section) -> str:
+def _terms_used(sections: list[Section], glossary: dict[str, str]) -> list[str]:
+    seen: list[str] = []
+    for s in sections:
+        for df in s.tables.values():
+            labels = list(df.columns) + ([str(v) for v in df[df.columns[0]].to_list() if isinstance(v, str)] if df.height else [])
+            for lab in labels:
+                key = lab if lab in glossary else (lab.lower() if lab.lower() in glossary else None)
+                if key and key not in seen:
+                    seen.append(key)
+    return seen
+
+
+def glossary_section(sections: list[Section], glossary: dict[str, str]) -> Section:
+    terms = _terms_used(sections, glossary)
+    df = pl.DataFrame({"term": terms, "meaning": [glossary[t] for t in terms]})
+    return Section("Glossary", {"Terms on this page": df}, [], ["Every heading and row label above that has a definition is listed here, in the order it first appears."])
+
+
+def _section_html(s: Section, glossary: dict[str, str] | None = None) -> str:
     parts = [f"<section><h2>{html.escape(s.title)}</h2>"]
     for n in s.notes:
         parts.append(f"<p class='note'>{_md_inline(n)}</p>")
     for f in s.figures:
         parts.append(f"<figure><img src='{html.escape(f)}' alt='{html.escape(f)}'></figure>")
     for name, df in s.tables.items():
-        parts.append(f"<h3>{html.escape(name)}</h3>{table_html(df)}")
+        parts.append(f"<h3>{html.escape(name)}</h3>")
+        if name in s.captions:
+            parts.append(f"<p class='caption'>{_md_inline(s.captions[name])}</p>")
+        parts.append(table_html(df, glossary if name != "Terms on this page" else None))
     parts.append("</section>")
     return "".join(parts)
 
@@ -218,8 +282,28 @@ th,td{padding:4px 10px;border-bottom:1px solid var(--line);text-align:right;whit
 td:first-child,th:first-child{text-align:left}figure{margin:8px 0}img{max-width:100%;height:auto}
 .muted{color:var(--muted)}nav{font-size:13px;margin:6px 0 0}nav a{margin-right:12px;color:var(--accent);text-decoration:none}
 .runs td a{color:var(--accent);text-decoration:none}
+p.caption{font-size:13px;color:var(--ink);margin:2px 0 8px;max-width:900px}
+.tip{border-bottom:1px dotted var(--accent);cursor:help}
+#tipbox{position:fixed;z-index:9;max-width:360px;background:#1a1f24;color:#fff;font-size:12.5px;line-height:1.4;padding:8px 10px;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.25);pointer-events:none;display:none;white-space:normal;text-align:left}
+td.txt{text-align:left;white-space:normal;min-width:220px;max-width:560px;color:var(--muted)}
 .runs td:nth-child(4){white-space:normal;min-width:360px;max-width:520px;text-align:left;font-size:12px;color:var(--muted)}
 """
+
+
+TIP_JS = """
+const box=document.createElement('div');box.id='tipbox';document.body.appendChild(box);
+document.addEventListener('mouseover',e=>{const t=e.target.closest('.tip');if(!t)return;box.textContent=t.dataset.tip;box.style.display='block';});
+document.addEventListener('mousemove',e=>{if(box.style.display!=='block')return;const w=box.offsetWidth,h=box.offsetHeight;let x=e.clientX+14,y=e.clientY+16;
+if(x+w>window.innerWidth-8)x=e.clientX-w-14;if(y+h>window.innerHeight-8)y=e.clientY-h-12;box.style.left=x+'px';box.style.top=y+'px';});
+document.addEventListener('mouseout',e=>{if(e.target.closest&&e.target.closest('.tip'))box.style.display='none';});
+"""
+
+
+def project_glossary(project: Project) -> dict[str, str]:
+    g = dict(CORE_GLOSSARY)
+    if project.has_module("evaluation"):
+        g.update(getattr(project.module("evaluation"), "GLOSSARY", {}) or {})
+    return g
 
 
 def render_run(project: Project, run_dir: Path) -> Path:
@@ -229,12 +313,14 @@ def render_run(project: Project, run_dir: Path) -> Path:
     sections = core_sections(project, run_dir, meta, pred, task)
     ctx = RunContext(project=project, model_cfg=meta.get("config") or {}, task=task, run_dir=run_dir, predictions=pred, meta=meta)
     sections += hook_sections(project, ctx)
+    glossary = project_glossary(project)
+    sections.append(glossary_section(sections, glossary))
     nav = "".join(f"<a href='#s{i}'>{html.escape(s.title)}</a>" for i, s in enumerate(sections))
-    body = "".join(_section_html(s).replace("<section>", f"<section id='s{i}'>", 1) for i, s in enumerate(sections))
+    body = "".join(_section_html(s, glossary).replace("<section>", f"<section id='s{i}'>", 1) for i, s in enumerate(sections))
     page = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(project.name)} / {html.escape(meta.get('model', ''))} / {html.escape(run_dir.name)}</title><style>{CSS}</style></head>
 <body><header><h1>{html.escape(project.name)} / {html.escape(str(meta.get('model')))}</h1><span class="muted">{html.escape(run_dir.name)} · {html.escape(str(meta.get('created_at', ''))[:19])}</span><a href="../index.html">all runs</a></header>
-<main><nav>{nav}</nav>{body}</main></body></html>"""
+<main><nav>{nav}</nav>{body}</main><script>{TIP_JS}</script></body></html>"""
     out = run_dir / "index.html"
     out.write_text(page, encoding="utf-8")
     render_index(project)
@@ -269,9 +355,9 @@ def render_index(project: Project) -> Path:
         rows.append(row)
     rows.reverse()
     df = pl.DataFrame(rows) if rows else pl.DataFrame({"run": []})
-    tbl = table_html(df).replace("&lt;a href=&#x27;", "<a href='").replace("&#x27;&gt;", "'>").replace("&lt;/a&gt;", "</a>")
+    tbl = table_html(df, project_glossary(project)).replace("&lt;a href=&#x27;", "<a href='").replace("&#x27;&gt;", "'>").replace("&lt;/a&gt;", "</a>")
     page = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>{html.escape(project.name)} runs</title><style>{CSS}</style></head>
-<body><header><h1>{html.escape(project.name)} · runs</h1></header><main><section class="runs"><h2>Runs (newest first)</h2>{tbl}</section></main></body></html>"""
+<body><header><h1>{html.escape(project.name)} · runs</h1></header><main><section class="runs"><h2>Runs (newest first)</h2><p class="caption">One row per training run. `test_logloss` is the model's honest score, `baseline_logloss` the bookmaker's on the same rows, and `model_minus_baseline` the difference: negative means we beat the book. Hover a heading for its definition; click a run for its page.</p>{tbl}</section></main><script>{TIP_JS}</script></body></html>"""
     out = project.runs_dir / "index.html"
     project.runs_dir.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
