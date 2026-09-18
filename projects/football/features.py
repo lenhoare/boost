@@ -214,3 +214,104 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
     )
     features = list(dict.fromkeys(features))
     return out, features
+
+
+# ---------------------------------------------------------------------------
+# Plain-English descriptions. Core calls describe(name) for tooltips and the
+# "Features used" section. Names are built from a few parts, so most are
+# derived; the rest are listed.
+
+_STAT = {
+    "pts": "points taken (3 win, 1 draw, 0 loss)",
+    "gd": "goal difference",
+    "gf": "goals scored",
+    "ga": "goals conceded",
+    "xgf": "expected goals (xG) created",
+    "xga": "expected goals (xG) conceded",
+    "shf": "shots taken",
+    "sha": "shots faced",
+    "sotf": "shots on target taken",
+    "sota": "shots on target faced",
+    "poss": "possession share (%)",
+    "cf": "corners won",
+    "ca": "corners conceded",
+}
+_SIDE = {"h": "Home side's", "a": "Away side's"}
+_FIXED = {
+    "elo": "Elo rating before this match. Everyone starts at 1500; it rises with wins and falls with losses, moving more for surprising results and bigger margins.",
+    "rank": "league position before this match (1 = top). Early in a season this is noisy.",
+    "cong14": "matches played in the previous 14 days. High values mean a congested fixture list.",
+    "rest_days": "days since their previous match.",
+    "last_resid": "how far their previous result beat or fell short of what Elo expected, from +1 (won when expected to lose) to -1 (lost when expected to win). Captures a one-off surprise that may carry over.",
+    "last_gd": "goal difference in their previous match.",
+    "top4": "1 if they were in the top four before this match, else 0.",
+    "std_played": "matches played so far this season.",
+    "std_ppg": "points per game so far this season.",
+    "std_gf": "goals scored per game so far this season.",
+    "std_ga": "goals conceded per game so far this season.",
+    "std_gd": "goal difference per game so far this season.",
+    "prev_ppg": "points per game over the whole of last season. Missing if they were not in the league last season.",
+    "prev_gd": "goal difference per game over the whole of last season. Missing if not in the league last season.",
+    "newcomer": "1 if there is no previous season for them in the data (promoted, or the first season we have), else 0.",
+    "career_played": "matches for them in the dataset before this one.",
+    "venue_played": "matches before this one at this venue type (home games for the home side, away games for the away side).",
+}
+_WHOLE = {
+    "elo_exp_home": "Elo's own probability of a home win, from the two ratings plus a 60-point home advantage.",
+    "h2h_gd3": "Average goal difference from the home side's point of view over the last three meetings between these two teams, any venue. Missing if they have not met in the data.",
+    "h2h_n": "How many previous meetings (up to three) feed h2h_gd3.",
+    "n_teams_season": "Number of teams seen so far this season; 20 once every team has played.",
+    "month": "Calendar month of the match (1 to 12).",
+    "weekday": "Day of the week (1 = Monday to 7 = Sunday).",
+    "days_into_season": "Days since the first match of this season.",
+    "home_xg_pre": "Pre-match expected-goals forecast for the home side, supplied with the data by its source's own model. Missing before 2016-17.",
+    "away_xg_pre": "Pre-match expected-goals forecast for the away side, supplied with the data. Missing before 2016-17.",
+    "home_ppg_pre": "Pre-match points-per-game figure for the home side, supplied with the data. Its exact definition is unknown; weaker than our own season-to-date figure.",
+    "away_ppg_pre": "Pre-match points-per-game figure for the away side, supplied with the data. Definition unknown.",
+    "d_xg_pre": "Supplied pre-match xG forecast, home minus away.",
+    "d_ppg_pre": "Supplied pre-match points per game, home minus away.",
+    "d_attack_h": "Home attack against away defence: home side's weighted xG created minus away side's weighted xG conceded.",
+    "d_attack_a": "Away attack against home defence: away side's weighted xG created minus home side's weighted xG conceded.",
+    "home_team": "Home team name, as a category.",
+    "away_team": "Away team name, as a category.",
+    "referee": "Match referee, as a category. Missing on about a third of rows.",
+    "book_h": "Bookmaker's closing probability of a home win with the margin removed. Excluded from history-only models.",
+    "book_d": "Bookmaker's closing probability of a draw, margin removed.",
+    "book_a": "Bookmaker's closing probability of an away win, margin removed.",
+    "book_overround": "Sum of the bookmaker's three implied probabilities before removing the margin; 1.05 means a 5% margin.",
+    "book_is_exchange": "1 if the prices come from the Betfair exchange (2024-25 on), 0 for Bet365.",
+}
+
+
+def _body(body: str) -> str | None:
+    if body in _FIXED:
+        return _FIXED[body]
+    if body.startswith("form"):
+        win, _, stat = body[4:].partition("_")
+        if stat in _STAT and win.isdigit():
+            return f"average {_STAT[stat]} over their last {win} matches (any venue), before this one."
+    if body.startswith("ewm_"):
+        stat = body[4:]
+        if stat in _STAT:
+            return f"weighted average {_STAT[stat]} over all their past matches, recent ones counting more (half-life 8 matches)."
+    if body.startswith("venue5_"):
+        stat = body[7:]
+        if stat in _STAT:
+            return f"average {_STAT[stat]} over their last 5 matches at this venue type (home games for the home side, away games for the away side)."
+    return None
+
+
+def describe(name: str) -> str | None:
+    """Plain-English meaning of one feature column, or None if unknown."""
+    if name in _WHOLE:
+        return _WHOLE[name]
+    side, _, body = name.partition("_")
+    if side in _SIDE:
+        text = _body(body)
+        return f"{_SIDE[side]} {text}" if text else None
+    if side == "d":
+        text = _body(body)
+        if text:
+            first = text.split(". ")[0].rstrip(".")
+            return f"Home minus away: {first[0].lower() + first[1:]}, for the home side minus the same for the away side."
+    return None

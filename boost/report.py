@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -299,6 +300,37 @@ document.addEventListener('mouseout',e=>{if(e.target.closest&&e.target.closest('
 """
 
 
+def feature_docs(project: Project, run_dir: Path) -> tuple[list[str], list[str], dict[str, str]]:
+    """(features, categorical, name -> description) for one run."""
+    info = json.loads((run_dir / "features.json").read_text()) if (run_dir / "features.json").exists() else {}
+    names = list(info.get("features") or [])
+    cats = list(info.get("categorical") or [])
+    docs: dict[str, str] = {}
+    if project.has_module("features"):
+        fn = getattr(project.module("features"), "describe", None)
+        if callable(fn):
+            for n in names:
+                d = fn(n)
+                if d:
+                    docs[n] = str(d)
+    return names, cats, docs
+
+
+def features_section(names: list[str], cats: list[str], docs: dict[str, str], importance: pl.DataFrame) -> Section:
+    share = dict(zip(importance["feature"].to_list(), importance["gain_share"].to_list()))
+    df = pl.DataFrame({
+        "feature": names,
+        "type": ["category" if n in cats else "number" for n in names],
+        "gain_share": [share.get(n) for n in names],
+        "meaning": [docs.get(n, "") for n in names],
+    })
+    missing = [n for n in names if n not in docs]
+    notes = [f"All {len(names)} inputs the model was allowed to see, in the order the project defines them. `gain_share` says how much the trees used each one (blank means never)."]
+    if missing:
+        notes.append(f"{len(missing)} features have no description yet: {', '.join(missing[:12])}{'…' if len(missing) > 12 else ''}.")
+    return Section("Features used", {"Inputs": df}, [], notes)
+
+
 def project_glossary(project: Project) -> dict[str, str]:
     g = dict(CORE_GLOSSARY)
     if project.has_module("evaluation"):
@@ -314,9 +346,12 @@ def render_run(project: Project, run_dir: Path) -> Path:
     ctx = RunContext(project=project, model_cfg=meta.get("config") or {}, task=task, run_dir=run_dir, predictions=pred, meta=meta)
     sections += hook_sections(project, ctx)
     glossary = project_glossary(project)
+    names, cats, docs = feature_docs(project, run_dir)
+    sections.append(features_section(names, cats, docs, pl.read_parquet(run_dir / "importance.parquet")))
     sections.append(glossary_section(sections, glossary))
+    tips = {**docs, **glossary}   # feature tooltips everywhere a feature name is a label; glossary wins on clashes
     nav = "".join(f"<a href='#s{i}'>{html.escape(s.title)}</a>" for i, s in enumerate(sections))
-    body = "".join(_section_html(s, glossary).replace("<section>", f"<section id='s{i}'>", 1) for i, s in enumerate(sections))
+    body = "".join(_section_html(s, tips).replace("<section>", f"<section id='s{i}'>", 1) for i, s in enumerate(sections))
     page = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(project.name)} / {html.escape(meta.get('model', ''))} / {html.escape(run_dir.name)}</title><style>{CSS}</style></head>
 <body><header><h1>{html.escape(project.name)} / {html.escape(str(meta.get('model')))}</h1><span class="muted">{html.escape(run_dir.name)} · {html.escape(str(meta.get('created_at', ''))[:19])}</span><a href="../index.html">all runs</a></header>
