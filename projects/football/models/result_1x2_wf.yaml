@@ -1,4 +1,7 @@
 # result_1x2 evaluated walk-forward: retrain before each season, predict that season.
+description: >-
+  Same inputs as result_1x2 (team histories only, no bookmaker prices) but evaluated walk-forward: for every season from 2014-15 the model is retrained on all earlier seasons and then predicts that season. That gives honest out-of-sample forecasts for 13 seasons instead of 4.
+
 task:
   type: multiclass
   target: ftr

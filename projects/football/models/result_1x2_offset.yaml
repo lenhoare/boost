@@ -1,6 +1,9 @@
 # Start from the book's log-odds and let the booster learn a correction from team histories.
 # This is the cleanest test of "does our information add anything to the market?".
 # If it cannot beat the baseline logloss, the answer is no.
+description: >-
+  Starts from the bookmaker's own probabilities and lets the model learn only an adjustment to them from team histories. If it cannot get a lower loss than the book, our histories add nothing the market does not already know. Earliest 75% train, latest 25% test.
+
 task:
   type: multiclass
   target: ftr

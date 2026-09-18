@@ -1,4 +1,7 @@
 # Full-time result, three-way, from team histories only. No book prices as features.
+description: >-
+  Predicts the full-time result (home win, draw or away win, the market bookmakers call 1X2) using only each team's past matches: Elo rating, recent form, season-to-date record, home and away form, rest days, fixture congestion and head-to-head. The model never sees bookmaker prices. Trained on the earliest 75% of matches and tested on the latest 25%.
+
 task:
   type: multiclass
   target: ftr

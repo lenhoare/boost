@@ -119,6 +119,7 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
         "project": project.name,
         "model": model_name,
         "tag": tag,
+        "description": mcfg.get("description"),
         "task": {"type": task.type, "target": task.target, "classes": task.class_names or None},
         "baseline": baseline,
         "offset": bool(offset is not None),

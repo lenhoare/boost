@@ -44,15 +44,35 @@ def _summary_section(meta: dict[str, Any], curve: pl.DataFrame, task: Task) -> S
     keys = list(dict.fromkeys(k for split in metrics.values() for k in split))
     rows = [{"metric": k, **{split: metrics[split].get(k) for split in metrics}} for k in keys]
     folds = pl.DataFrame(meta.get("folds") or [])
-    notes = [
+    notes = []
+    if meta.get("description"):
+        notes.append(str(meta["description"]))
+    if meta.get("tag"):
+        notes.append(f"Tag: {meta['tag']}")
+    notes += [
         f"Task: {task.type} on `{task.target}`" + (f", classes {list(task.class_names)}" if task.class_names else ""),
         f"Rows {meta.get('rows')}, features {meta.get('n_features')}, folds {len(meta.get('folds') or [])}, {meta.get('seconds')} s.",
     ]
-    if meta.get("baseline"):
-        notes.append("`model_minus_baseline` is model logloss minus baseline logloss on rows where the baseline exists. Negative means the model beats it.")
-    if meta.get("tag"):
-        notes.insert(0, f"Tag: {meta['tag']}")
-    return Section("Summary", {"Metrics": pl.DataFrame(rows), "Folds": folds}, [], notes)
+    return Section("Summary", {"Metrics": pl.DataFrame(rows), "Folds": folds}, [], notes + _how_to_read(task, bool(meta.get("baseline"))))
+
+
+def _how_to_read(task: Task, has_baseline: bool) -> list[str]:
+    """Plain-English definitions of the numbers in the metrics table."""
+    if task.is_classification:
+        k = max(task.n_classes, 2)
+        guess = math.log(k)
+        out = [
+            f"How to read: `logloss` is the average surprise at what actually happened (minus the log of the probability given to the real outcome). Lower is better. Guessing {k} ways equally scores {guess:.3f}; a perfect forecaster scores 0.",
+            "`brier` is the average squared distance between the probabilities and the outcome; lower is better. `accuracy` is how often the most likely outcome was the actual one. Accuracy ignores how confident the forecast was, so logloss is the number to trust.",
+            "`valid` rows were used to decide when to stop training. `test` rows were never seen while training and are the honest score.",
+        ]
+        if has_baseline:
+            out.append("`baseline_logloss` is the same score for the comparison forecast (here, the bookmaker's de-vigged closing prices). `model_minus_baseline` is model minus baseline: negative means we beat it, positive means it beats us.")
+        return out
+    out = ["How to read: `rmse` is root mean squared error and `mae` mean absolute error, both in the target's units; lower is better."]
+    if task.type == "poisson":
+        out.append("`poisson_deviance` is the proper score for count targets; lower is better.")
+    return out
 
 
 def _curve_section(curve: pl.DataFrame, run_dir: Path) -> Section:
@@ -198,6 +218,7 @@ th,td{padding:4px 10px;border-bottom:1px solid var(--line);text-align:right;whit
 td:first-child,th:first-child{text-align:left}figure{margin:8px 0}img{max-width:100%;height:auto}
 .muted{color:var(--muted)}nav{font-size:13px;margin:6px 0 0}nav a{margin-right:12px;color:var(--accent);text-decoration:none}
 .runs td a{color:var(--accent);text-decoration:none}
+.runs td:nth-child(4){white-space:normal;min-width:360px;max-width:520px;text-align:left;font-size:12px;color:var(--muted)}
 """
 
 
@@ -220,14 +241,23 @@ def render_run(project: Project, run_dir: Path) -> Path:
     return out
 
 
+def _yaml_description(project: Project, model: str) -> str:
+    try:
+        return str(project.model_cfg(model).get("description") or "")
+    except FileNotFoundError:
+        return ""
+
+
 def render_index(project: Project) -> Path:
     rows = []
     for r in list_runs(project):
         m = load_meta(r)
         te = (m.get("metrics") or {}).get("test") or {}
+        desc = m.get("description") or _yaml_description(project, str(m.get("model")))
         row: dict[str, Any] = {
             "run": f"<a href='{r.name}/index.html'>{html.escape(r.name)}</a>",
             "model": m.get("model"), "tag": m.get("tag") or "",
+            "description": desc,
             "split": ((m.get("config") or {}).get("split") or {}).get("strategy", "holdout"),
             "rows": m.get("rows"), "features": m.get("n_features"),
             "test_n": te.get("n"),

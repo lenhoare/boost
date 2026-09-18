@@ -1,4 +1,7 @@
 # Same as result_1x2 but the book prices are features. Tests whether history adds anything on top of the market.
+description: >-
+  Same team-history inputs as result_1x2, plus the bookmaker's closing prices as ordinary inputs. Asks whether the model can beat the market once it is allowed to see the market.
+
 task:
   type: multiclass
   target: ftr

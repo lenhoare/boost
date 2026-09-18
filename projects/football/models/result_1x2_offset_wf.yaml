@@ -1,4 +1,7 @@
 # Offset model evaluated walk-forward by season. Per-season model_minus_baseline tells you when, if ever, histories beat the close.
+description: >-
+  The same 'adjust the bookmaker' test as result_1x2_offset, evaluated walk-forward season by season from 2014-15.
+
 task:
   type: multiclass
   target: ftr
