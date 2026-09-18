@@ -102,10 +102,26 @@ def _team_history(long: pl.DataFrame, half_life: float) -> pl.DataFrame:
     return long
 
 
-def _sequential(df: pl.DataFrame, k: float, home_adv: float) -> pl.DataFrame:
-    """One pass in date order: Elo, standings, congestion, h2h, last-match surprise."""
+def _sequential(df: pl.DataFrame, k: float, home_adv: float, k_goals: float = 0.05) -> pl.DataFrame:
+    """One pass in date order: Elo, standings, congestion, h2h, last-match surprise.
+
+    Also six venue-specific ratings per team (added 2026-09-18, see newfeaturenotes.md):
+      res_home / res_away  Elo from home results only / away results only (start 1500, step k)
+      att_home / def_home  goals scored / conceded at home, log-rate units (start 0, step k_goals)
+      att_away / def_away  goals scored / conceded away
+    Expected home goals = running league average x exp(att_home[h] - def_away[a]); the
+    attack rating rises and the defence rating falls by k_goals x (actual - expected).
+    """
     n = df.height
     rating: dict[str, float] = defaultdict(lambda: 1500.0)
+    res_home: dict[str, float] = defaultdict(lambda: 1500.0)
+    res_away: dict[str, float] = defaultdict(lambda: 1500.0)
+    att_home: dict[str, float] = defaultdict(float)
+    def_home: dict[str, float] = defaultdict(float)
+    att_away: dict[str, float] = defaultdict(float)
+    def_away: dict[str, float] = defaultdict(float)
+    goals_seen = 0
+    sum_hg, sum_ag = 0.0, 0.0
     recent: dict[str, deque] = defaultdict(deque)
     last_resid: dict[str, float] = {}
     last_gd: dict[str, float] = {}
@@ -117,6 +133,9 @@ def _sequential(df: pl.DataFrame, k: float, home_adv: float) -> pl.DataFrame:
     out = {name: np.full(n, np.nan) for name in (
         "h_elo", "a_elo", "elo_exp_home", "h_rank", "a_rank", "h_cong14", "a_cong14",
         "h2h_gd3", "h2h_n", "h_last_resid", "a_last_resid", "h_last_gd", "a_last_gd", "n_teams_season",
+        "h_elo_res_home", "a_elo_res_away", "elo_venue_exp_home",
+        "h_elo_att_home", "h_elo_def_home", "a_elo_att_away", "a_elo_def_away",
+        "elo_xg_home", "elo_xg_away",
     )}
     rows = df.select(["season", "date", "home_team", "away_team", "home_goals", "away_goals"]).iter_rows()
     for i, (season, date, h, a, hg, ag) in enumerate(rows):
@@ -128,6 +147,17 @@ def _sequential(df: pl.DataFrame, k: float, home_adv: float) -> pl.DataFrame:
         rh, ra = rating[h], rating[a]
         exp_h = 1.0 / (1.0 + 10 ** ((ra - (rh + home_adv)) / 400.0))
         out["h_elo"][i], out["a_elo"][i], out["elo_exp_home"][i] = rh, ra, exp_h
+        # venue-specific ratings, read before this match
+        vh, va = res_home[h], res_away[a]
+        venue_exp = 1.0 / (1.0 + 10 ** ((va - vh) / 400.0))
+        out["h_elo_res_home"][i], out["a_elo_res_away"][i], out["elo_venue_exp_home"][i] = vh, va, venue_exp
+        avg_hg = sum_hg / goals_seen if goals_seen else 1.5
+        avg_ag = sum_ag / goals_seen if goals_seen else 1.2
+        xg_h = avg_hg * np.exp(att_home[h] - def_away[a])
+        xg_a = avg_ag * np.exp(att_away[a] - def_home[h])
+        out["h_elo_att_home"][i], out["h_elo_def_home"][i] = att_home[h], def_home[h]
+        out["a_elo_att_away"][i], out["a_elo_def_away"][i] = att_away[a], def_away[a]
+        out["elo_xg_home"][i], out["elo_xg_away"][i] = xg_h, xg_a
         standings = sorted(table_pts, key=lambda t: (table_pts[t], table_gd[t]), reverse=True)
         rank = {t: r + 1 for r, t in enumerate(standings)}
         out["h_rank"][i], out["a_rank"][i] = rank[h], rank[a]
@@ -155,6 +185,15 @@ def _sequential(df: pl.DataFrame, k: float, home_adv: float) -> pl.DataFrame:
         rating[h] = rh + k * margin * (actual - exp_h)
         rating[a] = ra + k * margin * ((1.0 - actual) - (1.0 - exp_h))
         last_resid[h], last_resid[a] = actual - exp_h, (1.0 - actual) - (1.0 - exp_h)
+        res_home[h] = vh + k * (actual - venue_exp)
+        res_away[a] = va + k * ((1.0 - actual) - (1.0 - venue_exp))
+        att_home[h] += k_goals * (hg - xg_h)
+        def_away[a] -= k_goals * (hg - xg_h)
+        att_away[a] += k_goals * (ag - xg_a)
+        def_home[h] -= k_goals * (ag - xg_a)
+        goals_seen += 1
+        sum_hg += hg
+        sum_ag += ag
         last_gd[h], last_gd[a] = float(hg - ag), float(ag - hg)
         ph, pa = (3, 0) if hg > ag else ((0, 3) if hg < ag else (1, 1))
         table_pts[h] += ph; table_pts[a] += pa
@@ -169,13 +208,14 @@ def _sequential(df: pl.DataFrame, k: float, home_adv: float) -> pl.DataFrame:
 def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str]]:
     fcfg = dict(cfg.get("features") or {})
     k = float(fcfg.get("elo_k", 20)); home_adv = float(fcfg.get("elo_home_adv", 60)); hl = float(fcfg.get("ewm_half_life", 8))
+    k_goals = float(fcfg.get("elo_goals_k", 0.05))
 
     long = _team_history(_long(df), hl)
     side_cols = [c for c in long.columns if c.startswith(("form", "ewm_", "std_", "venue", "prev_", "career_")) or c in ("rest_days", "newcomer")]
     side_cols = [c for c in side_cols if c not in ("std_pts", "std_gf_sum", "std_ga_sum", "prev_played")]
     home_side = long.filter(pl.col("is_home")).select(["match_id", *[pl.col(c).alias(f"h_{c}") for c in side_cols]])
     away_side = long.filter(~pl.col("is_home")).select(["match_id", *[pl.col(c).alias(f"a_{c}") for c in side_cols]])
-    seq = _sequential(df, k, home_adv)
+    seq = _sequential(df, k, home_adv, k_goals)
 
     out = df.join(home_side, on="match_id", how="left").join(away_side, on="match_id", how="left").join(seq, on="match_id", how="left")
     season_start = out.group_by("season").agg(pl.col("date").min().alias("season_first"))
@@ -200,6 +240,10 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
         (pl.col("h_ewm_gf") - pl.col("a_ewm_gf")).alias("d_ewm_gf"),
         (pl.col("h_ewm_ga") - pl.col("a_ewm_ga")).alias("d_ewm_ga"),
         (pl.col("h_venue5_pts") - pl.col("a_venue5_pts")).alias("d_venue5_pts"),
+        (pl.col("h_elo_res_home") - pl.col("a_elo_res_away")).alias("d_elo_res_venue"),
+        (pl.col("h_elo_att_home") - pl.col("a_elo_def_away")).alias("d_elo_attack_h"),
+        (pl.col("a_elo_att_away") - pl.col("h_elo_def_home")).alias("d_elo_attack_a"),
+        (pl.col("elo_xg_home") - pl.col("elo_xg_away")).alias("d_elo_xg"),
         (pl.col("h_rank") <= 4).cast(pl.Int8).alias("h_top4"),
         (pl.col("a_rank") <= 4).cast(pl.Int8).alias("a_top4"),
         pl.when(pl.col("odds_source").str.contains("betfair")).then(1).otherwise(0).cast(pl.Int8).alias("book_is_exchange"),
@@ -208,6 +252,7 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
     features = (
         [c for c in out.columns if c.startswith(("h_", "a_", "d_"))]
         + ["home_xg_pre", "away_xg_pre", "home_ppg_pre", "away_ppg_pre", "elo_exp_home", "h2h_gd3", "h2h_n",
+           "elo_venue_exp_home", "elo_xg_home", "elo_xg_away",
            "n_teams_season", "month", "weekday", "days_into_season",
            "home_team", "away_team", "referee",
            "book_h", "book_d", "book_a", "book_overround", "book_is_exchange"]
@@ -258,6 +303,19 @@ _FIXED = {
 }
 _WHOLE = {
     "elo_exp_home": "Elo's own probability of a home win, from the two ratings plus a 60-point home advantage.",
+    "h_elo_res_home": "Home side's Elo built only from its home results. Starts at 1500 and updates like the overall Elo, but away games never touch it.",
+    "a_elo_res_away": "Away side's Elo built only from its away results. Starts at 1500; home games never touch it.",
+    "elo_venue_exp_home": "Probability of a home win implied by the two venue-specific result Elos (home side's home rating against away side's away rating). No separate home-advantage term is needed because the split already carries it.",
+    "h_elo_att_home": "Home side's goals-scored rating at home, in log units: 0 is league average, +0.1 means about 10% more goals than average. Rises when they score more than expected at home.",
+    "h_elo_def_home": "Home side's goals-conceded rating at home, log units. Higher is a better defence: it rises when they concede fewer than expected at home.",
+    "a_elo_att_away": "Away side's goals-scored rating away from home, log units; 0 is league average.",
+    "a_elo_def_away": "Away side's goals-conceded rating away from home, log units; higher is a better defence.",
+    "elo_xg_home": "Expected home goals from the goals ratings: running league average for home goals times exp(home attack rating minus away defence rating).",
+    "elo_xg_away": "Expected away goals from the goals ratings: running league average for away goals times exp(away attack rating minus home defence rating).",
+    "d_elo_res_venue": "Home side's home-results Elo minus away side's away-results Elo.",
+    "d_elo_attack_h": "Home attack against away defence in the goals ratings: home side's home attack rating minus away side's away defence rating. Positive means more home goals than average are expected.",
+    "d_elo_attack_a": "Away attack against home defence in the goals ratings: away side's away attack rating minus home side's home defence rating.",
+    "d_elo_xg": "Expected goals from the ratings, home minus away.",
     "h2h_gd3": "Average goal difference from the home side's point of view over the last three meetings between these two teams, any venue. Missing if they have not met in the data.",
     "h2h_n": "How many previous meetings (up to three) feed h2h_gd3.",
     "n_teams_season": "Number of teams seen so far this season; 20 once every team has played.",

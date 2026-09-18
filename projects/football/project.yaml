@@ -11,6 +11,7 @@ features:
   elo_k: 20                        # rating step per match
   elo_home_adv: 60                 # rating points added to the home side for expectation
   ewm_half_life: 8                 # matches; for exponentially weighted form
+  elo_goals_k: 0.05                # step for the goals-scored / goals-conceded ratings (log-goal units)
 
 evaluation:
   module: evaluate.py              # evaluate(ctx) -> list[Section]; betting analysis
