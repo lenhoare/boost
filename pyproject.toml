@@ -1,0 +1,22 @@
+[project]
+name = "boost"
+version = "0.1.0"
+description = "Reusable gradient-boosting framework: data recipe in, project features in, evaluated runs out"
+requires-python = ">=3.12"
+dependencies = [
+    "polars>=1.30",
+    "numpy>=2.0",
+    "lightgbm>=4.6",
+    "pyyaml>=6.0",
+    "matplotlib>=3.9",
+]
+
+[project.scripts]
+boost = "boost.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["boost*"]

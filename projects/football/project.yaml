@@ -1,0 +1,24 @@
+name: football
+
+data:
+  module: data/prepare.py          # prepare(project_dir, cfg) -> DataFrame
+  source: data/combined.csv
+  prepared: data/prepared.parquet
+
+features:
+  module: features.py              # build(df, cfg) -> (DataFrame, feature_names)
+  cache: data/features.parquet
+  elo_k: 20                        # rating step per match
+  elo_home_adv: 60                 # rating points added to the home side for expectation
+  ewm_half_life: 8                 # matches; for exponentially weighted form
+
+evaluation:
+  module: evaluate.py              # evaluate(ctx) -> list[Section]; betting analysis
+  ev_thresholds: [0.0, 0.05, 0.10, 0.20]
+  kelly_fraction: 0.25
+  bootstrap: 2000
+
+roles:
+  order: date                      # time order; splits respect it
+  period: season                   # breakdown column for walk-forward and per-period tables
+  id: [date, home_team, away_team]

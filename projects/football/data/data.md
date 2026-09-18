@@ -1,0 +1,51 @@
+# Data
+
+## The brief (as given)
+
+The combined.csv dataset should be fairly clean.
+
+Training set: the top 75% of sensible data (earliest in time). Prematch
+bookmakers odds will be evaluated against AND can be available to learn from in
+this draft (we may disable if it dominates). Until 2024 Bet365 odds are
+present which are harsh. Later Betfair odds are more realistic.
+
+Evaluation set: the top 25%.
+
+Most columns in this dataset should be included.
+
+Moon phase: leave out for now.
+
+## What prepare.py does
+
+- Parses `date` (mixed dd/mm/yy and dd/mm/yyyy), sorts by date then teams, adds `match_id`.
+- Renames `fthg/ftag` to `home_goals/away_goals`. Keeps `ftr` (H/D/A) as the 1X2 target. Adds `goal_diff`, `total_goals`.
+- Turns the source's `-1` "not collected" into null for corners, cards, shots, fouls, possession. Turns `0.0` xG into null (early seasons have no xG; a true 0.00 does not occur).
+- `attendance` "N/A" to null, cast to integer.
+- De-vigs the closing 1X2 prices into `book_h`, `book_d`, `book_a` (1/odds normalised to sum to one) and keeps `book_overround`. Only rows with all three prices above 1.01 get book probabilities.
+- Parses goal timings into `home_goals_ht`, `away_goals_ht` (minute 45 and stoppage count as first half), `first_goal_minute`, `first_goal_side`. Not used by the current models; there for later timing targets.
+- Renames `home_prematch_xg/ppg` to `home_xg_pre`, `home_ppg_pre` (same for away).
+
+## Leak audit
+
+- `home_ppg` / `away_ppg`: constant within every team-season (340 of 340). That is the season-final points per game and would leak the season's results into every match. Dropped.
+- `home_ppg_pre` / `away_ppg_pre`: not our season-to-date PPG (median gap 0.25) and not the last-5-at-venue figure either. Definition unknown. It correlates less with the result than our own season-to-date PPG (0.18 vs 0.24), so it is not a leak. Kept as a feature; low importance in practice.
+- `home_xg`, shots, possession, corners, cards: post-match. Never used directly; features use them only through lagged team histories.
+- `attendance`, `venue`: not used as features. `referee` is in the feature list but excluded by the default models.
+- 2026-27 rows (40): results and odds present, all statistics null. They still get history features from prior seasons.
+
+## Coverage by season
+
+| seasons | odds | overround | xG | shots/possession/corners |
+|---|---|---|---|---|
+| 2010-11, 2011-12 | Bet365 | ~5.5% | none | none |
+| 2012-13 to 2015-16 | Bet365 | ~2.6 to 4% | none | full |
+| 2016-17 to 2018-19 | Bet365 | ~3% | full (pre-match xG 95%) | full |
+| 2019-20 to 2023-24 | Bet365 closing | ~5.4% | full | full |
+| 2024-25, 2025-26 | Betfair exchange closing | ~0.6 to 0.8% | full | full |
+| 2026-27 (40 games) | Betfair exchange closing | ~0.6% | none yet | none yet |
+
+The 25% holdout test starts in 2022-23 and so includes the whole Betfair era, where the book is a much sharper bar.
+
+## Split
+
+Holdout models: earliest 75% train (last 15% of that is the early-stopping slice), latest 25% test. Walk-forward models: retrain before each season from 2014-15 on, predict that season.

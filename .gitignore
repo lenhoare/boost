@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+projects/*/data/prepared.parquet
+projects/*/data/features.parquet
+projects/*/runs/

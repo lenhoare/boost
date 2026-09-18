@@ -1,0 +1,33 @@
+# Offset model evaluated walk-forward by season. Per-season model_minus_baseline tells you when, if ever, histories beat the close.
+task:
+  type: multiclass
+  target: ftr
+  classes: [H, D, A]
+
+baseline: [book_h, book_d, book_a]
+offset: true                              # init_score = log(book probabilities)
+passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goals]
+
+features:
+  include: ["*"]
+  exclude: ["book_*", "home_team", "away_team", "referee"]
+
+split:
+  strategy: walk_forward
+  min_periods: 4
+  valid_periods: 1
+
+model:
+  library: lightgbm
+  rounds: 3000
+  early_stopping: 150
+  refit: true
+  params:
+    learning_rate: 0.01
+    num_leaves: 5
+    min_data_in_leaf: 80
+    feature_fraction: 0.6
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 20.0
+    seed: 7

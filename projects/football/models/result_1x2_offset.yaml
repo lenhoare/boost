@@ -1,0 +1,35 @@
+# Start from the book's log-odds and let the booster learn a correction from team histories.
+# This is the cleanest test of "does our information add anything to the market?".
+# If it cannot beat the baseline logloss, the answer is no.
+task:
+  type: multiclass
+  target: ftr
+  classes: [H, D, A]
+
+baseline: [book_h, book_d, book_a]
+offset: true                              # init_score = log(book probabilities)
+passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goals]
+
+features:
+  include: ["*"]
+  exclude: ["book_*", "home_team", "away_team", "referee"]
+
+split:
+  strategy: holdout
+  train_fraction: 0.75
+  valid_fraction: 0.15
+
+model:
+  library: lightgbm
+  rounds: 3000
+  early_stopping: 150
+  refit: true
+  params:
+    learning_rate: 0.01
+    num_leaves: 5
+    min_data_in_leaf: 80
+    feature_fraction: 0.6
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 20.0
+    seed: 7
