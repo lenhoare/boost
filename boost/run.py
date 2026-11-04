@@ -11,7 +11,7 @@ import numpy as np
 import polars as pl
 
 from boost.data import build_features, select_features
-from boost.metrics import summary
+from boost.metrics import comparison_table, logloss_rows, summary
 from boost.project import Project
 from boost.split import make_folds
 from boost.store import new_run_dir, write_meta
@@ -21,6 +21,32 @@ from boost.types import Task
 
 def _unique(seq: list[str]) -> list[str]:
     return list(dict.fromkeys(s for s in seq if s))
+
+
+def _seed_spread(task: Task, df: pl.DataFrame, y: np.ndarray, seed_test: list[list[tuple[np.ndarray, np.ndarray]]], baseline: list[str]) -> dict[str, float]:
+    """Test score of each seed on its own, to show how much one run moves by chance."""
+    if not task.is_classification:
+        return {}
+    scores, diffs = [], []
+    B = df.select(baseline).to_numpy().astype(np.float64) if baseline else None
+    for parts in seed_test:
+        idx = np.concatenate([i for i, _ in parts])
+        P = np.concatenate([p for _, p in parts])
+        if idx.size == 0:
+            continue
+        lm = logloss_rows(P, y[idx])
+        scores.append(float(lm.mean()))
+        if B is not None:
+            b = B[idx]
+            ok = np.isfinite(b).all(axis=1)
+            bn = b[ok] / b[ok].sum(axis=1, keepdims=True)
+            diffs.append(float(lm[ok].mean() - logloss_rows(bn, y[idx][ok]).mean()))
+    if len(scores) < 2:
+        return {}
+    out = {"seed_logloss_mean": float(np.mean(scores)), "seed_sd": float(np.std(scores, ddof=1)), "seed_logloss_min": float(min(scores)), "seed_logloss_max": float(max(scores))}
+    if diffs:
+        out["seed_minus_baseline_mean"] = float(np.mean(diffs))
+    return out
 
 
 def train(project: Project, model_name: str, tag: str | None = None, log=print) -> Path:
@@ -67,7 +93,12 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
     y = task.encode(df[task.target])
 
     passthrough = [c for c in (mcfg.get("passthrough") or []) if c in df.columns]
-    keep = _unique(project.id_cols + [project.period_col or "", project.order_col or ""] + baseline + passthrough + [task.target])
+    compare = {str(k): [str(c) for c in v] for k, v in (mcfg.get("compare") or {}).items()}
+    missing_cmp = sorted({c for cols in compare.values() for c in cols if c not in df.columns})
+    if missing_cmp:
+        raise KeyError(f"compare columns not in frame: {missing_cmp}")
+    compare_cols = [c for cols in compare.values() for c in cols]
+    keep = _unique(project.id_cols + [project.period_col or "", project.order_col or ""] + baseline + compare_cols + passthrough + [task.target])
     keep = [c for c in keep if c in df.columns]
 
     log(f"{project.name}/{model_name}  task {task.type} on {task.target}  rows {df.height}  features {len(features)}  folds {len(folds)}  split {mcfg.get('split', {}).get('strategy', 'holdout')}")
@@ -77,10 +108,18 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
     importances: list[pl.DataFrame] = []
     fold_meta: list[dict[str, Any]] = []
     last_booster = None
+    n_seeds = max(1, int((mcfg.get("model") or {}).get("seeds", 1)))
+    seed_test: list[list[tuple[np.ndarray, np.ndarray]]] = [[] for _ in range(n_seeds)]
     for i, fold in enumerate(folds):
-        res = fit_fold(m, y, fold, task, mcfg, offset=offset)
+        # seeds > 1: fit the fold once per seed and average the predictions (bagging over randomness)
+        fits = [fit_fold(m, y, fold, task, mcfg, seed_offset=s, offset=offset) for s in range(n_seeds)]
+        res = fits[0]
+        valid_pred = np.mean([f.valid_pred for f in fits], axis=0)
+        test_pred = np.mean([f.test_pred for f in fits], axis=0)
+        for s, f in enumerate(fits):
+            seed_test[s].append((fold.test, f.test_pred))
         last_booster = res.booster
-        for split, idx, pred in (("valid", fold.valid, res.valid_pred), ("test", fold.test, res.test_pred)):
+        for split, idx, pred in (("valid", fold.valid, valid_pred), ("test", fold.test, test_pred)):
             if idx.size == 0:
                 continue
             part = df[idx].select(keep)
@@ -92,8 +131,13 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
                 extra["pred"] = pred
             pieces.append(part.with_columns([pl.Series(k, v) for k, v in extra.items()]))
         curves.append(res.curve.with_columns(pl.lit(fold.name).alias("fold")))
-        importances.append(res.importance.with_columns(pl.lit(fold.name).alias("fold")))
-        fm = {"fold": fold.name, "n_train": int(fold.train.size), "n_valid": int(fold.valid.size), "n_test": int(fold.test.size), "best_iteration": res.best_iteration, "valid_loss": float(res.curve["valid"][res.best_iteration - 1]) if res.best_iteration <= res.curve.height else None}
+        for f in fits:
+            importances.append(f.importance.with_columns(pl.lit(fold.name).alias("fold")))
+        best = [f.best_iteration for f in fits]
+        vloss = [float(f.curve["valid"][f.best_iteration - 1]) for f in fits if f.best_iteration <= f.curve.height]
+        fm = {"fold": fold.name, "n_train": int(fold.train.size), "n_valid": int(fold.valid.size), "n_test": int(fold.test.size), "best_iteration": int(round(float(np.mean(best)))), "valid_loss": float(np.mean(vloss)) if vloss else None}
+        if n_seeds > 1:
+            fm["best_iteration_min"], fm["best_iteration_max"] = int(min(best)), int(max(best))
         fold_meta.append(fm)
         log(f"  fold {fold.name:>10}  train {fm['n_train']:5d}  valid {fm['n_valid']:5d}  test {fm['n_test']:5d}  best_iter {res.best_iteration:4d}  valid_loss {fm['valid_loss']:.4f}")
 
@@ -102,12 +146,15 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
     importance = (
         pl.concat(importances, how="vertical_relaxed")
         .group_by("feature")
-        .agg(pl.col("gain").mean(), pl.col("split").mean(), pl.len().alias("folds"))
+        .agg(pl.col("gain").mean(), pl.col("split").mean(), pl.col("fold").n_unique().alias("folds"))
         .with_columns((pl.col("gain") / pl.col("gain").sum()).alias("gain_share"))
         .sort("gain", descending=True)
     )
 
     metrics = {split: summary(task, pred.filter(pl.col("split") == split), baseline) for split in ("valid", "test")}
+    if n_seeds > 1:
+        metrics["test"].update(_seed_spread(task, df, y, seed_test, baseline))
+    comparisons = comparison_table(task, pred.filter(pl.col("split") == "test"), compare).to_dicts() if compare else []
     run_dir = new_run_dir(project, model_name)
     pred.write_parquet(run_dir / "predictions.parquet")
     curve.write_parquet(run_dir / "curve.parquet")
@@ -128,6 +175,9 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
         "config": mcfg,
         "folds": fold_meta,
         "metrics": metrics,
+        "compare": compare,
+        "comparisons": comparisons,
+        "seeds": n_seeds,
         "seconds": round(time.time() - t0, 1),
     }
     write_meta(run_dir, meta)
@@ -135,6 +185,12 @@ def train(project: Project, model_name: str, tag: str | None = None, log=print) 
     line = f"test logloss {te.get('logloss', float('nan')):.4f}" if task.is_classification else f"test rmse {te.get('rmse', float('nan')):.4f}"
     if "baseline_logloss" in te:
         line += f"  baseline {te['baseline_logloss']:.4f}  model-baseline {te['model_minus_baseline']:+.4f}"
+    if "diff_se" in te:
+        line += f" ± {te['diff_se']:.4f} (z {te['diff_z']:+.1f})"
+    if "seed_sd" in te:
+        line += f"  seeds {n_seeds}: single-seed sd {te['seed_sd']:.4f}"
     log(f"{line}  ({meta['seconds']}s)")
+    for c in comparisons:
+        log(f"  vs {c['forecast']:<14} n {c['n']:5d}  forecast {c['forecast_logloss']:.4f}  model-forecast {c['diff']:+.4f} ± {c['diff_se']:.4f}  (z {c['diff_z']:+.1f})")
     log(f"run {run_dir}")
     return run_dir

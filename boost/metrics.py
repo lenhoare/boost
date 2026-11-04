@@ -47,6 +47,58 @@ def regression_summary(pred: np.ndarray, y: np.ndarray, poisson: bool = False) -
     return out
 
 
+def paired(model_loss: np.ndarray, base_loss: np.ndarray) -> dict[str, float]:
+    """Per-row loss difference (model - base): mean, standard error, 95% interval, z.
+
+    Rows are treated as independent; for match-level football that is close to true.
+    z below about -2 is evidence the model is better; above +2, worse.
+    """
+    d = model_loss - base_loss
+    n = d.size
+    if n < 2:
+        return {}
+    mean = float(d.mean())
+    se = float(d.std(ddof=1) / np.sqrt(n))
+    return {"diff": mean, "diff_se": se, "diff_ci_lo": mean - 1.96 * se, "diff_ci_hi": mean + 1.96 * se, "diff_z": mean / se if se > 0 else float("nan")}
+
+
+def _probs(pred: pl.DataFrame, cols: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    B = pred.select(cols).to_numpy().astype(np.float64)
+    ok = np.isfinite(B).all(axis=1)
+    B = np.where(ok[:, None], B, 1.0)
+    return B / B.sum(axis=1, keepdims=True), ok
+
+
+def comparison_table(task: Task, pred: pl.DataFrame, compare: dict[str, list[str]]) -> pl.DataFrame:
+    """Model vs each named comparison forecast, on the rows where that forecast exists."""
+    if not task.is_classification or pred.height == 0 or not compare:
+        return pl.DataFrame()
+    P = pred.select(task.prob_columns).to_numpy()
+    y = pred["_y"].to_numpy().astype(np.int64)
+    rows = []
+    for name, cols in compare.items():
+        if any(c not in pred.columns for c in cols):
+            continue
+        B, ok = _probs(pred, cols)
+        if ok.sum() < 2:
+            continue
+        lm, lb = logloss_rows(P[ok], y[ok]), logloss_rows(B[ok], y[ok])
+        rows.append({"forecast": name, "n": int(ok.sum()), "model_logloss": float(lm.mean()), "forecast_logloss": float(lb.mean()), **paired(lm, lb)})
+    return pl.DataFrame(rows)
+
+
+def comparison_by_period(task: Task, pred: pl.DataFrame, compare: dict[str, list[str]], period_col: str) -> pl.DataFrame:
+    """Wide table: one row per period, one diff column per comparison forecast (model minus forecast)."""
+    rows = []
+    for period in pred[period_col].unique(maintain_order=True).to_list():
+        t = comparison_table(task, pred.filter(pl.col(period_col) == period), compare)
+        row: dict[str, object] = {"period": str(period)}
+        for r in t.iter_rows(named=True):
+            row[r["forecast"]] = r["diff"]
+        rows.append(row)
+    return pl.DataFrame(rows)
+
+
 def summary(task: Task, pred: pl.DataFrame, baseline: list[str] | None) -> dict[str, float]:
     """Metrics on one frame of predictions (already filtered to a split)."""
     if pred.height == 0:
@@ -64,6 +116,9 @@ def summary(task: Task, pred: pl.DataFrame, baseline: list[str] | None) -> dict[
                 out["baseline_logloss"] = float(logloss_rows(B, y[ok]).mean())
                 out["model_logloss_on_baseline_rows"] = float(logloss_rows(P[ok], y[ok]).mean())
                 out["model_minus_baseline"] = out["model_logloss_on_baseline_rows"] - out["baseline_logloss"]
+                pr = paired(logloss_rows(P[ok], y[ok]), logloss_rows(B, y[ok]))
+                if pr:
+                    out.update({"diff_se": pr["diff_se"], "diff_ci_lo": pr["diff_ci_lo"], "diff_ci_hi": pr["diff_ci_hi"], "diff_z": pr["diff_z"]})
         return out
     p = pred["pred"].to_numpy()
     y = pred["_y"].to_numpy().astype(np.float64)

@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 
 from boost.glossary import GLOSSARY as CORE_GLOSSARY
-from boost.metrics import calibration_table, class_balance, period_table
+from boost.metrics import calibration_table, class_balance, comparison_by_period, comparison_table, period_table
 from boost.project import Project
 from boost.store import list_runs, load_meta, load_predictions
 from boost.types import RunContext, Section, Task
@@ -71,6 +71,15 @@ METRIC_MEANING = {
     "baseline_logloss": "the comparison forecast's logloss; lower is better",
     "model_logloss_on_baseline_rows": "our logloss on those same rows",
     "model_minus_baseline": "negative = we beat the comparison; positive = it beat us",
+    "diff_se": "standard error of model_minus_baseline, from the per-row differences",
+    "diff_ci_lo": "95% interval, low end, for model_minus_baseline",
+    "diff_ci_hi": "95% interval, high end; if the interval spans 0 the gap could be luck",
+    "diff_z": "model_minus_baseline / diff_se; below -2 we are reliably better, above +2 reliably worse",
+    "seed_logloss_mean": "average test logloss of the single-seed models (the reported logloss averages their predictions)",
+    "seed_sd": "spread of test logloss between single-seed runs: changes smaller than this are seed noise",
+    "seed_logloss_min": "best single-seed test logloss",
+    "seed_logloss_max": "worst single-seed test logloss",
+    "seed_minus_baseline_mean": "average model_minus_baseline of the single-seed models",
     "rmse": "lower is better, target units",
     "mae": "lower is better, target units",
     "poisson_deviance": "lower is better",
@@ -152,6 +161,30 @@ def _period_section(task: Task, pred: pl.DataFrame, period_col: str, baseline: l
     })
 
 
+def _comparison_section(task: Task, pred: pl.DataFrame, compare: dict[str, list[str]], period_col: str | None, run_dir: Path) -> Section:
+    test = pred.filter(pl.col("split") == "test")
+    table = comparison_table(task, test, compare)
+    tables = {"Comparisons": table}
+    figs: list[str] = []
+    if table.height:
+        fig, ax = plt.subplots(figsize=(7, max(2.2, 0.45 * table.height + 0.8)))
+        yy = np.arange(table.height)[::-1]
+        d = table["diff"].to_numpy(); lo = table["diff_ci_lo"].to_numpy(); hi = table["diff_ci_hi"].to_numpy()
+        ax.errorbar(d, yy, xerr=[d - lo, hi - d], fmt="o", color=PALETTE[0], ecolor=PALETTE[0], capsize=3)
+        ax.axvline(0, color="#999", lw=0.8)
+        ax.set_yticks(yy); ax.set_yticklabels([f"{f} (n {n})" for f, n in zip(table["forecast"], table["n"])])
+        ax.set_xlabel("model logloss minus forecast logloss (left of 0: model better)"); ax.set_title("Model vs each comparison forecast, 95% intervals")
+        figs.append(save_fig(fig, run_dir, "comparisons.png"))
+    if period_col and period_col in test.columns:
+        tables["By period"] = comparison_by_period(task, test, compare, period_col)
+    return Section("Versus comparison forecasts (test rows)", tables, figs, [
+        "Each comparison is like for like: only rows where that forecast exists, with its margin removed. The interval comes from the per-row loss differences, so it accounts for the two forecasts moving together.",
+    ], {
+        "Comparisons": "`diff` is model logloss minus forecast logloss on the shared rows: negative means the model is better. `diff_z` is diff over its standard error; only beyond about ±2 is the gap more than luck.",
+        "By period": "`diff` per period for every comparison forecast. A real edge should be negative in most periods, not just one.",
+    })
+
+
 def _importance_section(importance: pl.DataFrame, run_dir: Path, top: int = 30) -> Section:
     head = importance.head(top)
     fig, ax = plt.subplots(figsize=(7, max(3.0, 0.22 * head.height)))
@@ -172,6 +205,9 @@ def core_sections(project: Project, run_dir: Path, meta: dict[str, Any], pred: p
         out.append(_calibration_section(task, pred, run_dir))
     if project.period_col and project.period_col in pred.columns:
         out.append(_period_section(task, pred, project.period_col, baseline, run_dir))
+    compare = dict(meta.get("compare") or {})
+    if compare and task.is_classification:
+        out.append(_comparison_section(task, pred, compare, project.period_col, run_dir))
     out.append(_importance_section(importance, run_dir))
     return out
 
@@ -384,7 +420,7 @@ def render_index(project: Project) -> Path:
             "test_n": te.get("n"),
         }
         if "logloss" in te:
-            row.update({"test_logloss": te.get("logloss"), "baseline_logloss": te.get("baseline_logloss"), "model_minus_baseline": te.get("model_minus_baseline"), "accuracy": te.get("accuracy")})
+            row.update({"test_logloss": te.get("logloss"), "baseline_logloss": te.get("baseline_logloss"), "model_minus_baseline": te.get("model_minus_baseline"), "diff_z": te.get("diff_z"), "seeds": m.get("seeds", 1), "seed_sd": te.get("seed_sd"), "accuracy": te.get("accuracy")})
         else:
             row.update({"test_rmse": te.get("rmse"), "test_mae": te.get("mae")})
         rows.append(row)

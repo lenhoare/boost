@@ -50,13 +50,20 @@ A project without one still gets the core sections.
 ```yaml
 task: {type: multiclass, target: ftr, classes: [H, D, A]}
 baseline: [book_h, book_d, book_a]     # probability columns to compare against (optional)
+compare: {pinnacle_close: [book_psc_h, book_psc_d, book_psc_a], ...}   # more bars, each scored like for like (optional)
 offset: true                           # start the booster from the baseline, learn a correction (optional)
 passthrough: [odds_home, ...]          # columns copied into predictions.parquet for hooks
 rows: "season_start >= 2012"           # optional SQL filter on the feature frame
 features: {include: ["*"], exclude: ["book_*"]}   # globs over the feature names
 split: {strategy: holdout | walk_forward | random, ...}
-model: {rounds: 3000, early_stopping: 150, refit: true, params: {...lightgbm params...}}
+model: {rounds: 3000, early_stopping: 150, refit: true, seeds: 5, params: {...lightgbm params...}}
 ```
+
+**Is a difference real?** Every comparison with a baseline or a `compare`
+forecast is paired: the per-row loss difference gives `diff_se` and `diff_z`.
+Only |z| above about 2 is more than luck. `seeds: N` fits each fold N times
+and averages the predictions; `seed_sd` is how much a single-seed run moves
+by chance, so a change between two runs smaller than that is noise.
 
 `offset: true` is the sharpest way to ask "does my information add anything to
 an existing forecast?": the booster starts from the baseline's log-odds and can

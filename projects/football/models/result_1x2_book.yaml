@@ -8,6 +8,14 @@ task:
   classes: [H, D, A]
 
 baseline: [book_h, book_d, book_a]        # de-vigged closing prices; the bar to beat
+compare:                                  # extra bars, each scored like for like on the rows where it exists
+  b365_pre: [book_b365_h, book_b365_d, book_b365_a]        # Bet365, Friday/Tuesday price, all seasons
+  pinnacle_pre: [book_ps_h, book_ps_d, book_ps_a]          # 2012-13 to mid 2025-26
+  avg_pre: [book_avg_h, book_avg_d, book_avg_a]            # market average, all seasons
+  pinnacle_close: [book_psc_h, book_psc_d, book_psc_a]     # sharpest bar; 2012-13 to mid 2025-26
+  b365_close: [book_b365c_h, book_b365c_d, book_b365c_a]   # 2019-20 on
+  avg_close: [book_avgc_h, book_avgc_d, book_avgc_a]       # 2019-20 on
+  betfair_close: [book_bfec_h, book_bfec_d, book_bfec_a]   # 2024-25 on
 passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goals]
 
 features:
@@ -24,6 +32,7 @@ model:
   rounds: 3000
   early_stopping: 150
   refit: true
+  seeds: 5                                # average 5 seeds; also reports single-seed spread
   params:
     learning_rate: 0.01
     num_leaves: 7
