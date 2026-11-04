@@ -261,3 +261,66 @@ What this says:
 - **Decision:** keep the current settings in `project.yaml`. The scale of
   these differences says a better goals model alone will not close the gap
   to the bookmakers. Any edge has to come from information the model lacks.
+
+# Step 5: a few features on top of the goals model (2026-11-04)
+
+`analysis/feature_blend.py` uses a multinomial logit that keeps the DC
+log-probabilities as an offset with a weight of their own. On top it puts a
+home and an away logit (draw is the reference), and four home-minus-away
+features, standardised and lightly shrunk (L2):
+
+- FootyStats pre-match xG
+- Elo
+- rest days, clipped to ±7
+- promoted
+
+Fitted before each season on all earlier ones; test 2014-15 on. Each feature
+is compared against the same model with no features ("recalibrated DC"), so
+any gain belongs to the feature.
+
+A. Goals model plus features, no prices (4600 matches):
+
+| | logloss | vs recalibrated DC |
+|---|---|---|
+| raw DC | 0.9758 | |
+| recalibrated DC | 0.9767 | (+0.0009 ± 0.0004 vs raw) |
+| + pre-match xG | 0.9757 | −0.0010 ± 0.0014 |
+| + Elo | 0.9755 | −0.0012 ± 0.0011 |
+| + rest days | 0.9769 | +0.0003 ± 0.0001 |
+| + promoted | 0.9775 | +0.0008 ± 0.0005 |
+| + all four | 0.9758 | −0.0009 ± 0.0018 |
+
+Elo and pre-match xG perhaps add 0.001 to the goals model. That is within
+noise, and no better than the raw DC forecast. Rest days and the promoted
+flag only hurt, because DC already handles promoted clubs through its
+newcomer prior.
+
+B. Price + DC + features, against the price alone, recalibrated the same way:
+
+| price | price | + DC | + DC + all four |
+|---|---|---|---|
+| Bet365 pre (4600) | 0.9624 | +0.0003 ± 0.0002 | +0.0023 ± 0.0010 |
+| Pinnacle pre (4390) | 0.9576 | +0.0003 ± 0.0002 | +0.0026 ± 0.0011 |
+| market average pre (4600) | 0.9615 | +0.0003 ± 0.0002 | +0.0022 ± 0.0010 |
+
+Every feature makes the price worse, at every shrinkage level. Results with
+Pinnacle, all four features:
+
+| L2 | diff ± se |
+|---|---|
+| 1 | +0.0026 ± 0.0011 |
+| 10 | +0.0018 ± 0.0009 |
+| 100 | +0.0006 ± 0.0005 |
+
+Each feature alone is ≥ 0 too. The weights that are fitted point the "wrong"
+way, for example a higher home Elo gap making an away win *more* likely than
+the price says. They also wander from season to season. That is how noise
+around a price looks when the price already contains the information.
+
+What this says: the obvious public information is priced in, whether it
+comes from goals, xG, ratings, rest or promotion. A history-only model,
+however it is built, sits about 0.018 behind the Friday price and adds
+nothing to it. Beating the bookmakers with this data would need something the
+market does not have, or does not have yet, at the moment of betting. The
+candidates are earlier timestamps than Friday (the Monday-to-Friday question
+in step 3) and team news.
