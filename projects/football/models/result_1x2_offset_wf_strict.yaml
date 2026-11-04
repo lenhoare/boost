@@ -17,6 +17,7 @@ compare:                                  # extra bars, each scored like for lik
   b365_close: [book_b365c_h, book_b365c_d, book_b365c_a]   # 2019-20 on
   avg_close: [book_avgc_h, book_avgc_d, book_avgc_a]       # 2019-20 on
   betfair_close: [book_bfec_h, book_bfec_d, book_bfec_a]   # 2024-25 on
+  dixon_coles: [dc_h, dc_d, dc_a]                          # our goals model on its own
 offset: true                              # init_score = log(book probabilities)
 passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goals]
 

@@ -8,7 +8,10 @@ team histories. Prefixes: h_ home side, a_ away side, d_ home minus away.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -205,6 +208,27 @@ def _sequential(df: pl.DataFrame, k: float, home_adv: float, k_goals: float = 0.
     return pl.DataFrame({"match_id": df["match_id"], **{k_: pl.Series(v) for k_, v in out.items()}})
 
 
+def _goals_model():
+    """goals_model.py sits next to this file; load it by path (projects are not packages)."""
+    spec = importlib.util.spec_from_file_location("football_goals_model", Path(__file__).with_name("goals_model.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod        # dataclasses look their module up here
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _dixon_coles(df: pl.DataFrame, fcfg: dict[str, Any]) -> pl.DataFrame:
+    """Walk-forward Dixon-Coles forecasts: dc_* from goals, dcx_* from a goals/xG blend."""
+    gm = _goals_model()
+    gcfg = dict(fcfg.get("goals_model") or {})
+    out = None
+    for prefix, xg_w in (("dc", 0.0), ("dcx", float(gcfg.get("xg_weight", 0.5)))):
+        c = gm.DCConfig.from_cfg({**gcfg, "xg_weight": xg_w}, prefix)
+        fc = gm.forecasts(df, c).drop(f"{prefix}_rho")
+        out = fc if out is None else out.join(fc, on="match_id")
+    return out
+
+
 def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str]]:
     fcfg = dict(cfg.get("features") or {})
     k = float(fcfg.get("elo_k", 20)); home_adv = float(fcfg.get("elo_home_adv", 60)); hl = float(fcfg.get("ewm_half_life", 8))
@@ -217,7 +241,8 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
     away_side = long.filter(~pl.col("is_home")).select(["match_id", *[pl.col(c).alias(f"a_{c}") for c in side_cols]])
     seq = _sequential(df, k, home_adv, k_goals)
 
-    out = df.join(home_side, on="match_id", how="left").join(away_side, on="match_id", how="left").join(seq, on="match_id", how="left")
+    dc = _dixon_coles(df, fcfg)
+    out = df.join(home_side, on="match_id", how="left").join(away_side, on="match_id", how="left").join(seq, on="match_id", how="left").join(dc, on="match_id", how="left")
     season_start = out.group_by("season").agg(pl.col("date").min().alias("season_first"))
     out = out.join(season_start, on="season", how="left").with_columns([
         pl.col("date").dt.month().alias("month"),
@@ -244,6 +269,8 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
         (pl.col("h_elo_att_home") - pl.col("a_elo_def_away")).alias("d_elo_attack_h"),
         (pl.col("a_elo_att_away") - pl.col("h_elo_def_home")).alias("d_elo_attack_a"),
         (pl.col("elo_xg_home") - pl.col("elo_xg_away")).alias("d_elo_xg"),
+        (pl.col("dc_xg_home") - pl.col("dc_xg_away")).alias("d_dc_xg"),
+        (pl.col("dcx_xg_home") - pl.col("dcx_xg_away")).alias("d_dcx_xg"),
         (pl.col("h_rank") <= 4).cast(pl.Int8).alias("h_top4"),
         (pl.col("a_rank") <= 4).cast(pl.Int8).alias("a_top4"),
         pl.when(pl.col("odds_source").str.contains("betfair")).then(1).otherwise(0).cast(pl.Int8).alias("book_is_exchange"),
@@ -253,6 +280,7 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
         [c for c in out.columns if c.startswith(("h_", "a_", "d_"))]
         + ["home_xg_pre", "away_xg_pre", "home_ppg_pre", "away_ppg_pre", "elo_exp_home", "h2h_gd3", "h2h_n",
            "elo_venue_exp_home", "elo_xg_home", "elo_xg_away",
+           *[f"{p}_{k}" for p in ("dc", "dcx") for k in ("h", "d", "a", "xg_home", "xg_away", "over25", "btts")],
            "n_teams_season", "month", "weekday", "days_into_season",
            "home_team", "away_team", "referee",
            "book_h", "book_d", "book_a", "book_overround", "book_is_exchange"]
@@ -316,6 +344,20 @@ _WHOLE = {
     "d_elo_attack_h": "Home attack against away defence in the goals ratings: home side's home attack rating minus away side's away defence rating. Positive means more home goals than average are expected.",
     "d_elo_attack_a": "Away attack against home defence in the goals ratings: away side's away attack rating minus home side's home defence rating.",
     "d_elo_xg": "Expected goals from the ratings, home minus away.",
+    **{f"{p}_{k}": f"{label} {text}" for p, label in (
+        ("dc", "Dixon-Coles goals model (fitted on goals):"),
+        ("dcx", "Dixon-Coles goals model (fitted on a 50/50 blend of goals and xG where xG exists):"),
+    ) for k, text in (
+        ("h", "probability of a home win. Refitted before every match date on all earlier matches, recent ones weighted more (half-life 500 days)."),
+        ("d", "probability of a draw, including the Dixon-Coles low-score correction."),
+        ("a", "probability of an away win."),
+        ("xg_home", "expected home goals: exp(constant + home advantage + home attack - away defence)."),
+        ("xg_away", "expected away goals: exp(constant + away attack - home defence)."),
+        ("over25", "probability of three or more goals."),
+        ("btts", "probability that both teams score."),
+    )},
+    "d_dc_xg": "Dixon-Coles (goals) expected goals, home minus away.",
+    "d_dcx_xg": "Dixon-Coles (goals and xG blend) expected goals, home minus away.",
     "h2h_gd3": "Average goal difference from the home side's point of view over the last three meetings between these two teams, any venue. Missing if they have not met in the data.",
     "h2h_n": "How many previous meetings (up to three) feed h2h_gd3.",
     "n_teams_season": "Number of teams seen so far this season; 20 once every team has played.",

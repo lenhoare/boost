@@ -1,0 +1,47 @@
+# Start from the Bet365 pre-match price; the only features are the Dixon-Coles outputs.
+description: >-
+  Starts from the Bet365 pre-match price and learns a correction using only the Dixon-Coles goals-model outputs. The boosted version of the two-weight blend test: does our goals model know anything the early price does not?
+
+
+task:
+  type: multiclass
+  target: ftr
+  classes: [H, D, A]
+
+baseline: [book_b365_h, book_b365_d, book_b365_a]   # Bet365 Friday/Tuesday price in every season: one consistent bar
+compare:                                  # extra bars, each scored like for like on the rows where it exists
+  b365_pre: [book_b365_h, book_b365_d, book_b365_a]        # Bet365, Friday/Tuesday price, all seasons
+  pinnacle_pre: [book_ps_h, book_ps_d, book_ps_a]          # 2012-13 to mid 2025-26
+  avg_pre: [book_avg_h, book_avg_d, book_avg_a]            # market average, all seasons
+  pinnacle_close: [book_psc_h, book_psc_d, book_psc_a]     # sharpest bar; 2012-13 to mid 2025-26
+  b365_close: [book_b365c_h, book_b365c_d, book_b365c_a]   # 2019-20 on
+  avg_close: [book_avgc_h, book_avgc_d, book_avgc_a]       # 2019-20 on
+  betfair_close: [book_bfec_h, book_bfec_d, book_bfec_a]   # 2024-25 on
+  dixon_coles: [dc_h, dc_d, dc_a]                          # our goals model on its own
+offset: true                              # init_score = log(book probabilities)
+passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goals]
+
+features:
+  include: ["dc_*", "dcx_*", "d_dc_xg", "d_dcx_xg"]
+  exclude: []
+
+split:
+  strategy: walk_forward
+  min_periods: 4
+  valid_periods: 2
+
+model:
+  library: lightgbm
+  rounds: 3000
+  early_stopping: 300
+  refit: true
+  seeds: 5                                # average 5 seeds; also reports single-seed spread
+  params:
+    learning_rate: 0.003
+    num_leaves: 4
+    min_data_in_leaf: 200
+    feature_fraction: 0.6
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 50.0
+    seed: 7
