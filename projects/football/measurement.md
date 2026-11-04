@@ -324,3 +324,60 @@ nothing to it. Beating the bookmakers with this data would need something the
 market does not have, or does not have yet, at the moment of betting. The
 candidates are earlier timestamps than Friday (the Monday-to-Friday question
 in step 3) and team news.
+
+# Step 6: picking bets instead of pricing every match (2026-11-04)
+
+Logloss asks "would I make a better bookmaker?". A punter only needs to be
+right on the bets they choose. A model can be worse on average and still be
+right where it disagrees strongly with the price. `analysis/bet_select.py`
+tests that directly, on walk-forward forecasts from 2014-15 (4600 matches):
+
+- dc: Dixon-Coles
+- dcx: DC with half xG
+- dcf: DC + Elo + pre-match xG, from step 5
+
+**Who is right when they disagree?** Here q is the model probability and m
+the market's (Pinnacle pre-match, power de-vig). Regress (result − m) on
+(q − m) through the origin, over every match and outcome. A slope of 0 means
+the market is right; 1 means the model is.
+
+| model | slope ± se | |q − m| ≥ 0.10 only |
+|---|---|---|
+| dc | +0.01 ± 0.06 | +0.01 ± 0.09 |
+| dcx | +0.00 ± 0.06 | −0.09 ± 0.09 |
+| dcf | −0.02 ± 0.07 | −0.03 ± 0.11 |
+
+At most about 14% of the model's disagreement is real (upper 95% bound), and
+the best estimate is none. The biggest disagreements are no better. No
+pre-chosen segment stands out:
+
+- home / draw / away
+- favourites / middle / outsiders
+- early season / rest of season
+- promoted club involved / not
+
+The highest was "promoted club involved" at +0.20 ± 0.12 for dc and dcf.
+That is one of 14 segments × 3 models, so it is in line with chance. As bets
+(below) it has CLV −3.3% [−3.9, −2.8].
+
+**As bets.** Back every outcome with model EV > threshold:
+
+| model | bet at | EV > 0.05 bets | CLV vs Pinnacle close | ROI |
+|---|---|---|---|---|
+| dc | Bet365 pre | 3849 | −6.3% [−6.6, −6.0] | −2.0% [−8.8, +4.7] |
+| dc | best UK pre | 4349 | −3.7% [−4.0, −3.3] | +0.6% [−5.7, +7.1] |
+| dc | Pinnacle pre | 4284 | −4.6% [−4.9, −4.3] | −1.7% [−8.1, +4.7] |
+| dcf | best UK pre | 3845 | −3.4% [−3.7, −3.1] | −1.3% [−6.7, +4.9] |
+| reference: Pinnacle pre as fair, best UK, EV > 0.02 | | 671 | +2.9% [+2.1, +3.6] | +1.8% [−13, +18] |
+
+CLV is clearly negative for every model, every price and every threshold
+(0, 0.05, 0.10, 0.20). Raising the threshold makes it slightly *worse*: the
+more confident the model is against the price, the more the price moves
+against the bet. ROIs straddle zero only because results are noisy. Thousands
+of bets with CLV at −3% to −6% is a reliable loser over time.
+
+What this says: being selective does not rescue the history models. The
+price has already moved away from the matches the model likes, and the
+closing price confirms the market. Information in the football data alone
+gives no edge to pick bets with. The only positive line is still the step 3
+rule: shopping soft UK prices against the sharp price, with no model needed.
