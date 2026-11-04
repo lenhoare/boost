@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import sys
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -76,17 +76,13 @@ def build_cache(workers: int, refresh: bool) -> pl.DataFrame:
     todo = [v for v in variants() if have is None or f"{key(v)}__h" not in have.columns]
     if todo:
         print(f"fitting {len(todo)} variants on {workers} workers ...", flush=True)
-        frames = []
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            for i, (k, fc) in enumerate(ex.map(_run, todo), 1):
-                frames.append(fc)
-                if i % 10 == 0 or i == len(todo):
-                    print(f"  {i}/{len(todo)}", flush=True)
-        out = have if have is not None else frames[0].select("match_id")
-        for fc in frames:
-            out = out.join(fc, on="match_id", how="left")
-        out.write_parquet(CACHE)
-        have = out
+            futures = [ex.submit(_run, v) for v in todo]
+            for i, fut in enumerate(as_completed(futures), 1):
+                _, fc = fut.result()
+                have = fc if have is None else have.join(fc, on="match_id", how="left")
+                have.write_parquet(CACHE)  # saved after every variant, so an interrupted run resumes
+                print(f"  {i}/{len(todo)}", flush=True)
     return have
 
 
