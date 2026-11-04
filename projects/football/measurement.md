@@ -170,3 +170,31 @@ sides show value.)
    the close, and the snapshot time is football-data's, not one we can choose.
    Collecting our own timestamped prices (and team news) is the way to make
    this sharper and to test it live.
+
+# Step 3b: the Betfair exchange (2026-11-04)
+
+Exchanges do not restrict winning accounts, so an edge there would be one
+that lasts. `analysis/exchange_eval.py`: back the best net-EV side at the
+exchange's pre-match back price, commission 2% or 5% on winnings, 778
+matches from 2024-25 (Pinnacle on 590 of them). football-data gives back
+prices only, so laying is not tested.
+
+- **The exchange snapshot is already near-fair**: back prices sum to 100.65%.
+- **No edge.** CLV against the exchange's own close is negative in every
+  combination (fair = Pinnacle pre, market average or the line model's
+  predicted close; 2% or 5% commission; either de-vig), typically −1.5% to
+  −4%. CLV against Pinnacle's close is positive only under the proportional
+  de-vig (the longshot artefact) and negative under the power de-vig.
+  Realised ROI is negative throughout (e.g. −21% [−36, −6] for Pinnacle-fair
+  bets at 2% commission, power de-vig).
+- **The exchange is a good replacement reference** now Pinnacle's feed has
+  stopped: on the shared 590 matches its pre-match price scores 0.9757
+  against Pinnacle's 0.9769 (−0.0012 ± 0.0009).
+- **But with the exchange as the fair price, best UK prices rarely show
+  value**: 103 bets in 778 matches at EV > 0, CLV +0.5% [−1.1, +2.0]. The
+  soft-book edge of earlier seasons has largely closed in the exchange era.
+
+Taken together with step 3: the market information in a once-a-day snapshot
+is fully priced by the sharp end of the market (Pinnacle, the exchange).
+The only measurable value was soft UK books lagging that sharp price, and it
+has been fading.
