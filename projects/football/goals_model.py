@@ -22,6 +22,9 @@ Options (all off by default, which reproduces the original model):
                        to log(sum w hg / sum w ag) over past matches with that half-life, and held
                        fixed in the main fit. Lets it fall quickly when, say, crowds disappear.
   team_home            per-team home advantage on top, shrunk to 0 with weight ridge_home.
+  refit_days           refit only when this many days have passed since the last fit (or a new
+                       season starts); dates in between use the last fit, which saw only matches
+                       before its own date, so nothing leaks. 7 is about 5x faster than daily.
   draw_inflation       multiply every draw score by (1 + delta) and renormalise; delta is fitted
                        with rho in the second step (diagonal-inflated Dixon-Coles).
 
@@ -52,6 +55,7 @@ class DCConfig:
     team_home: bool = False
     ridge_home: float = 20.0
     draw_inflation: bool = False
+    refit_days: float = 0.0       # 0: refit before every match date; 7: at most weekly (see forecasts)
     prefix: str = "dc"
 
     @classmethod
@@ -66,6 +70,7 @@ class DCConfig:
             team_home=bool(d.get("team_home", False)),
             ridge_home=float(d.get("ridge_home", 20.0)),
             draw_inflation=bool(d.get("draw_inflation", False)),
+            refit_days=float(d.get("refit_days", 0.0)),
             prefix=prefix,
         )
 
@@ -236,12 +241,21 @@ def forecasts(df: pl.DataFrame, cfg: DCConfig) -> pl.DataFrame:
     window = max(cfg.window_days, 2.5 * cfg.half_life_days)   # long half-lives need a longer look-back
     uniq_days = np.unique(days)
     played = np.isfinite(gh) & np.isfinite(ga)
+    last_fit, last_season, rho, delta = None, None, 0.0, 0.0
     for day in uniq_days:
         today = np.flatnonzero(days == day)
+        s = seasons[today[0]]
+        if last_fit is not None and s == last_season and day < last_fit + cfg.refit_days:
+            mh, ma = fitter.means(hi[today], ai[today])   # reuse the last fit
+            pr = score_probs(mh, ma, rho, delta)
+            for k in ("h", "d", "a", "over25", "btts"):
+                out[k][today] = pr[k]
+            out["xg_home"][today], out["xg_away"][today], out["rho"][today] = mh, ma, rho
+            continue
         past = np.flatnonzero((days < day) & (days >= day - window) & played)
         if past.size < 200:      # first ~half season: not enough to fit
             continue
-        s = seasons[today[0]]
+        last_fit, last_season = day, s
         si = season_order.index(s)
         prev = in_season[season_order[si - 1]] if si > 0 else set()
         newcomer = np.array([0.0 if t in prev else 1.0 for t in range(len(teams))])

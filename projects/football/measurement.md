@@ -198,3 +198,66 @@ Taken together with step 3: the market information in a once-a-day snapshot
 is fully priced by the sharp end of the market (Pinnacle, the exchange).
 The only measurable value was soft UK books lagging that sharp price, and it
 has been fading.
+
+# Step 4: tuning the goals model (2026-11-04)
+
+Is the Dixon-Coles model as good as it can be with this data?
+`analysis/goals_tune.py` fits a grid fixed in advance:
+
+- half-life 250 / 500 / 1000 days
+- ridge 2 / 5 / 10
+- home advantage: global, or dynamic (its own 120-day decay), or dynamic plus per team
+- xG weight in the target 0 / 0.25 / 0.5
+- low scores: rho only, or rho plus draw inflation
+
+That is 162 variants, all walk-forward. Then **nested selection**: for each
+test season, use whichever variant scored best on the seasons before it. The
+score therefore pays for the choosing.
+
+For speed the grid refits weekly instead of before every match date, and a
+new season always triggers a refit. Checked on the current model: daily
+0.97582, weekly 0.97597 (+0.00015 ± 0.00014). Draw-inflated: daily 0.97570,
+weekly 0.97586. Weekly is as good, and about 3 times faster.
+
+Test seasons 2014-15 on, 4600 matches; current model (hl500, r5, global, xg0,
+rho) 0.9760 weekly:
+
+| | logloss | vs current |
+|---|---|---|
+| nested selection (honest) | 0.9756 | −0.0003 ± 0.0007 (z −0.5) |
+| best in hindsight (hl250 r2 global xg0.25 draw-infl.) | 0.9737 | −0.0023 ± 0.0010 (optimistic) |
+
+One ingredient changed at a time:
+
+| change | diff ± se |
+|---|---|
+| half-life 250 | −0.0010 ± 0.0009 |
+| half-life 1000 | +0.0036 ± 0.0011 |
+| ridge 2 / 10 | +0.0004 / +0.0003 ± 0.0004 |
+| dynamic home | +0.0005 ± 0.0005 |
+| dynamic + per-team home | +0.0001 ± 0.0006 |
+| xG weight 0.25 | −0.0002 ± 0.0006 |
+| xG weight 0.5 | +0.0015 ± 0.0013 |
+| draw inflation | −0.0001 ± 0.0004 |
+
+Dispersion: Pearson variance/mean given the model's means is 0.991 for home
+goals and 1.042 for away goals. Poisson fits, so a negative-binomial model
+is not worth building.
+
+What this says:
+
+- **The current model is already at the top of this family.** Nothing beats
+  it beyond noise. Nested selection gains 0.0003. Even the best variant in
+  hindsight gains only 0.002, against a gap to the pre-match prices of about
+  0.02.
+- **Per-team and time-varying home advantage add nothing.** Home advantage did
+  drop in the empty-stadium season, 2020-21, but a single global term refitted
+  weekly already follows it closely enough.
+- **xG helps a little at most, and only blended lightly (0.25).** Half xG
+  is worse. Nested selection settles on xg0.25 and a 250-day half-life from
+  2022-23 onwards, and gains in 2024-25 (−0.0085) and 2025-26 (−0.0038). It
+  may be that recent seasons reward faster updating. Two seasons are not
+  enough to rely on, but this is the setting to watch.
+- **Decision:** keep the current settings in `project.yaml`. The scale of
+  these differences says a better goals model alone will not close the gap
+  to the bookmakers. Any edge has to come from information the model lacks.

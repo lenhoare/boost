@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-import numpy as np
-import polars as pl
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "POLARS_MAX_THREADS"):
+    os.environ.setdefault(_v, "1")   # one BLAS thread per worker; otherwise the workers fight over the cores
+import numpy as np  # noqa: E402
+import polars as pl  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -33,6 +36,7 @@ from boost.metrics import logloss_rows, paired  # noqa: E402
 PREPARED = ROOT / "projects/football/data/prepared.parquet"
 CACHE = ROOT / "projects/football/data/goals_grid.parquet"
 FIRST_TEST = "2014-15"
+REFIT_DAYS = 7.0          # weekly refits: same logloss as daily to 0.0002 (measurement.md, step 4), ~3x faster
 FIRST_SCORED = "2011-12"   # forecasts exist from part-way through 2010-11; selection uses 2011-12 on
 
 GRID = {
@@ -59,7 +63,7 @@ def _config(v: dict):
     return gm.DCConfig(
         half_life_days=float(v["half_life_days"]), ridge=float(v["ridge"]), xg_weight=float(v["xg_weight"]),
         home_half_life_days=120.0 if v["home"] != "global" else 0.0, team_home=v["home"] == "dynamic_team",
-        draw_inflation=bool(v["draw_inflation"]), prefix="g",
+        draw_inflation=bool(v["draw_inflation"]), refit_days=REFIT_DAYS, prefix="g",
     )
 
 
