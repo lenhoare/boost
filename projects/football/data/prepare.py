@@ -23,6 +23,32 @@ NEG1_STATS = [
 # Zero here means "not available", never a real value.
 ZERO_IS_NULL = ["home_xg", "away_xg", "home_prematch_xg", "away_prematch_xg"]
 
+# football-data.co.uk price sets: our name -> candidate column stems, first present wins.
+# A stem plus H/D/A gives the 1X2 columns. "Bb" stems are the pre-2019-20 Betbrain names.
+# Pre-match prices are collected Friday afternoon (weekend) / Tuesday (midweek); "C" = closing.
+FD_1X2 = {
+    "b365": ["B365"], "b365c": ["B365C"],
+    "ps": ["PS"], "psc": ["PSC"],
+    "avg": ["Avg", "BbAv"], "avgc": ["AvgC"],
+    "max": ["Max", "BbMx"], "maxc": ["MaxC"],
+    "bfe": ["BFE"], "bfec": ["BFEC"],
+}
+# over/under 2.5 goals: our name -> candidate prefixes; prefix + ">2.5" / "<2.5"
+FD_OU = {
+    "b365": ["B365"], "b365c": ["B365C"], "ps": ["P"], "psc": ["PC"],
+    "avg": ["Avg", "BbAv"], "avgc": ["AvgC"], "max": ["Max", "BbMx"], "maxc": ["MaxC"],
+    "bfe": ["BFE"], "bfec": ["BFEC"],
+}
+# Asian handicap: line columns, then price sets; prefix + "AHH" / "AHA"
+FD_AH_LINE = {"ah_line": ["AHh", "BbAHh"], "ah_line_c": ["AHCh"]}
+FD_AH = {
+    "b365": ["B365"], "b365c": ["B365C"], "ps": ["P"], "psc": ["PC"],
+    "avg": ["Avg", "BbAv"], "avgc": ["AvgC"], "max": ["Max", "BbMx"], "maxc": ["MaxC"],
+    "bfe": ["BFE"], "bfec": ["BFEC"],
+}
+# football-data team name -> ours, where lowercase-and-underscore is not enough
+FD_TEAMS = {"Man United": "man_utd", "Nott'm Forest": "nottingham_forest", "Sheffield United": "sheffield_utd"}
+
 
 def _parse_minutes(raw: str | None) -> list[int]:
     """'12,45'6,90'3' -> [12, 45, 90]. Stoppage time folds into 45 / 90."""
@@ -94,6 +120,103 @@ def _audit_ppg(df: pl.DataFrame) -> list[str]:
     return notes
 
 
+def _num(d: pl.DataFrame, col: str) -> pl.Expr:
+    return pl.col(col).cast(pl.Float64, strict=False) if col in d.columns else pl.lit(None, dtype=pl.Float64)
+
+
+def _first(d: pl.DataFrame, cands: list[str], suffix: str) -> str | None:
+    for c in cands:
+        if c + suffix in d.columns and d[c + suffix].is_not_null().any():
+            return c + suffix
+    return None
+
+
+def _read_football_data(folder: Path) -> pl.DataFrame:
+    """Every E0_*.csv -> one frame keyed on (date, home_team, away_team) with canonical odds columns.
+
+    Raw prices: odds_<set>_{h,d,a}, ou_<set>_{over,under}, ah_<set>_{h,a}, plus ah_line / ah_line_c
+    (home handicap, e.g. -0.75). Kick-off time as kickoff where supplied (2019-20 on).
+    """
+    frames = []
+    for f in sorted(folder.glob("E0_*.csv")):
+        d = pl.read_csv(f, infer_schema_length=0, encoding="utf8-lossy", truncate_ragged_lines=True)
+        d = d.filter(pl.col("HomeTeam").is_not_null() & pl.col("Date").is_not_null())
+        cols: list[pl.Expr] = [
+            pl.when(pl.col("Date").str.len_chars() == 10)
+            .then(pl.col("Date").str.strptime(pl.Date, "%d/%m/%Y", strict=False))
+            .otherwise(pl.col("Date").str.strptime(pl.Date, "%d/%m/%y", strict=False)).alias("date"),
+            pl.col("HomeTeam").alias("fd_home"), pl.col("AwayTeam").alias("fd_away"),
+            (pl.col("Time") if "Time" in d.columns else pl.lit(None, dtype=pl.Utf8)).alias("kickoff"),
+        ]
+        for name, stems in FD_1X2.items():
+            stem = next((s for s in stems if _first(d, [s], "H")), None)
+            for side in "HDA":
+                cols.append((_num(d, stem + side) if stem else pl.lit(None, dtype=pl.Float64)).alias(f"odds_{name}_{side.lower()}"))
+        for name, pre in FD_OU.items():
+            c_over, c_under = _first(d, pre, ">2.5"), _first(d, pre, "<2.5")
+            cols.append((_num(d, c_over) if c_over else pl.lit(None, dtype=pl.Float64)).alias(f"ou_{name}_over"))
+            cols.append((_num(d, c_under) if c_under else pl.lit(None, dtype=pl.Float64)).alias(f"ou_{name}_under"))
+        for name, cands in FD_AH_LINE.items():
+            c = next((x for x in cands if x in d.columns), None)
+            cols.append((_num(d, c) if c else pl.lit(None, dtype=pl.Float64)).alias(name))
+        for name, pre in FD_AH.items():
+            ch, ca = _first(d, pre, "AHH"), _first(d, pre, "AHA")
+            cols.append((_num(d, ch) if ch else pl.lit(None, dtype=pl.Float64)).alias(f"ah_{name}_h"))
+            cols.append((_num(d, ca) if ca else pl.lit(None, dtype=pl.Float64)).alias(f"ah_{name}_a"))
+        frames.append(d.select(cols))
+    fd = pl.concat(frames, how="vertical_relaxed")
+    fix = lambda c: pl.col(c).replace_strict(FD_TEAMS, default=pl.col(c).str.to_lowercase().str.replace_all(" ", "_"))  # noqa: E731
+    fd = fd.with_columns(fix("fd_home").alias("home_team"), fix("fd_away").alias("away_team")).drop(["fd_home", "fd_away"])
+    # dummy / missing prices: anything at or below 1.01 is not a real price
+    price = [c for c in fd.columns if c.startswith(("odds_", "ou_", "ah_")) and not c.startswith("ah_line")]
+    fd = fd.with_columns([pl.when(pl.col(c) > 1.01).then(pl.col(c)).alias(c) for c in price])
+    if fd.select(["date", "home_team", "away_team"]).is_duplicated().any():
+        raise ValueError("duplicate (date, home, away) in football-data files")
+    return fd
+
+
+def _devig(df: pl.DataFrame) -> pl.DataFrame:
+    """Proportional de-vig for every 1X2 set -> book_<set>_{h,d,a} and book_<set>_overround.
+
+    Max (best price across books) is not one book's market, so it is left as raw odds only.
+    Over/under: p_<set>_over (de-vigged). Asian handicap prices stay raw (pushes and quarter lines).
+    """
+    exprs: list[pl.Expr] = []
+    for name in FD_1X2:
+        if name.startswith("max"):
+            continue
+        h, d_, a = (pl.col(f"odds_{name}_{s}") for s in "hda")
+        tot = 1.0 / h + 1.0 / d_ + 1.0 / a
+        exprs += [((1.0 / h) / tot).alias(f"book_{name}_h"), ((1.0 / d_) / tot).alias(f"book_{name}_d"),
+                  ((1.0 / a) / tot).alias(f"book_{name}_a"), tot.alias(f"book_{name}_overround")]
+    for name in FD_OU:
+        if name.startswith("max"):
+            continue
+        o, u = pl.col(f"ou_{name}_over"), pl.col(f"ou_{name}_under")
+        exprs.append(((1.0 / o) / (1.0 / o + 1.0 / u)).alias(f"p_{name}_over25"))
+    return df.with_columns(exprs)
+
+
+def _merge_football_data(df: pl.DataFrame, folder: Path) -> tuple[pl.DataFrame, list[str]]:
+    notes: list[str] = []
+    if not folder.is_dir():
+        return df, [f"no football-data folder at {folder}; extra price sets skipped"]
+    fd = _read_football_data(folder)
+    out = df.join(fd, on=["date", "home_team", "away_team"], how="left")
+    miss = out.filter(pl.col("odds_b365_h").is_null() & pl.col("odds_avg_h").is_null() & pl.col("odds_bfe_h").is_null())
+    if miss.height:
+        raise ValueError(f"{miss.height} combined.csv rows found no football-data match, e.g. {miss.select(['date', 'home_team', 'away_team']).head(5).to_dicts()}")
+    notes.append(f"football-data merged: {out.height}/{df.height} rows matched on (date, home, away)")
+    # consistency: our single price set must equal the football-data column its odds_source names
+    src_col = {"bet365": "odds_b365_h", "bet365_close": "odds_b365c_h", "betfair_exchange_close": "odds_bfec_h", "betfair_exchange": "odds_bfe_h"}
+    for src, col in src_col.items():
+        sub = out.filter(pl.col("odds_source") == src)
+        if sub.height:
+            same = ((sub["odds_home"] - sub[col]).abs() < 1e-6).mean()
+            notes.append(f"  odds_source={src}: odds_home equals {col} on {same:.1%} of {sub.height} rows")
+    return _devig(out), notes
+
+
 def prepare(project_dir: Path, cfg: dict[str, Any]) -> pl.DataFrame:
     src = project_dir / str((cfg.get("data") or {}).get("source") or "data/combined.csv")
     df = pl.read_csv(src, infer_schema_length=20000, null_values=["N/A", ""])
@@ -129,6 +252,9 @@ def prepare(project_dir: Path, cfg: dict[str, Any]) -> pl.DataFrame:
         pl.when(ok).then(tot).alias("book_overround"),
     ]).drop(["inv_odds_home", "inv_odds_draw", "inv_odds_away"])
 
+    fd_dir = project_dir / str((cfg.get("data") or {}).get("football_data") or "data/football-data")
+    df, fd_notes = _merge_football_data(df, fd_dir)
+
     df = _timing_columns(df)
     df = df.with_columns([
         (pl.col("home_goals") - pl.col("away_goals")).alias("goal_diff"),
@@ -136,7 +262,7 @@ def prepare(project_dir: Path, cfg: dict[str, Any]) -> pl.DataFrame:
         pl.col("season").str.slice(0, 4).cast(pl.Int64).alias("season_start"),
     ])
 
-    notes = _audit_ppg(df)
+    notes = fd_notes + _audit_ppg(df)
     df = df.drop(["home_ppg", "away_ppg"])
     df = df.rename({"home_prematch_ppg": "home_ppg_pre", "away_prematch_ppg": "away_ppg_pre",
                     "home_prematch_xg": "home_xg_pre", "away_prematch_xg": "away_xg_pre"})

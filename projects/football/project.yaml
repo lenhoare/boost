@@ -3,6 +3,7 @@ name: football
 data:
   module: data/prepare.py          # prepare(project_dir, cfg) -> DataFrame
   source: data/combined.csv
+  football_data: data/football-data   # E0_<yy><yy>.csv per season; all price sets joined on (date, home, away)
   prepared: data/prepared.parquet
 
 features:
