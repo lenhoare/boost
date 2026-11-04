@@ -7,4 +7,5 @@ build/
 .ruff_cache/
 projects/*/data/prepared.parquet
 projects/*/data/features.parquet
+projects/*/data/goals_grid.parquet
 projects/*/runs/
