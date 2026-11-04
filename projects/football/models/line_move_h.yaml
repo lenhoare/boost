@@ -1,0 +1,36 @@
+# Line model: how far Pinnacle's home-win probability moves between the pre-match snapshot and the close.
+description: >-
+  Predicts the move in Pinnacle's home-win probability (log close minus log pre-match) from what was known at the pre-match snapshot: every other bookmaker's price at that moment, their spread, margins and our goals model. Walk-forward by season from 2014-15. Baseline is "no move". analysis/line_eval.py combines the three line_move models into a predicted closing price and tests it.
+
+task:
+  type: regression
+  target: mv_ps_h
+
+rows: "mv_ps_h IS NOT NULL AND ln_ps_h IS NOT NULL"
+baseline: [mv_zero]                       # predicting no move
+passthrough: [match_id]
+
+features:
+  include: ["ln_*", "weekday", "month", "days_into_season"]
+  exclude: []
+
+split:
+  strategy: walk_forward                   # rows start 2012-13 (Pinnacle), so the first test season is 2014-15
+  min_periods: 2
+  valid_periods: 1
+
+model:
+  library: lightgbm
+  rounds: 3000
+  early_stopping: 200
+  refit: true
+  seeds: 5
+  params:
+    learning_rate: 0.01
+    num_leaves: 7
+    min_data_in_leaf: 60
+    feature_fraction: 0.7
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 10.0
+    seed: 7

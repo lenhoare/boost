@@ -49,6 +49,14 @@ best available; `bfe`, `bfec` Betfair exchange):
 - `ah_line`, `ah_line_c` Asian handicap line for the home side (pre-match,
   closing); `ah_<set>_{h,a}` prices.
 - `kickoff` time, 2019-20 on.
+- `bk_<code>_{h,d,a}` every individual bookmaker's 1X2 prices as football-data
+  codes them (`b365`, `bw`, `wh`, `vc`, `lb`, `iw`, `ps`, `bmgm`, ...; a
+  trailing `c` is the closing price, e.g. `bk_b365c_h`). Columns differ by season.
+- `odds_bestuk_{h,d,a}` / `odds_bestukc_*` best pre-match / closing price over
+  mainstream UK books (`UK_BOOKS` in `prepare.py`: no Pinnacle, no exchange, no
+  offshore books), `n_bestuk` how many fed it. Use this rather than `max`: the
+  football-data maximum often sums to under 100% (a guaranteed-profit
+  arbitrage), a sign of stale or erroneous quotes. Best UK keeps a 1 to 3.7% margin.
 
 Before 2019-20 `avg`/`max` are Betbrain's (`BbAvH`, `BbMxH`) and there are no
 closing prices except Pinnacle. Prices at or below 1.01 are nulled.

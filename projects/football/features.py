@@ -229,6 +229,65 @@ def _dixon_coles(df: pl.DataFrame, fcfg: dict[str, Any]) -> pl.DataFrame:
     return out
 
 
+LINE_REFS = ("avg", "b365", "bestuk", "max", "bfe")   # pre-match prices compared with Pinnacle's
+
+
+def _line(df: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
+    """Line-movement inputs and targets. Inputs use only prices collected at the same moment as
+    Pinnacle's pre-match price (football-data's Friday/Tuesday snapshot) plus our own forecasts.
+
+    ln_ps_{h,d,a}        log of Pinnacle's pre-match de-vigged probability (the level)
+    ln_<ref>_{h,d,a}     log(ref probability) - log(Pinnacle probability), refs: market average,
+                         Bet365, best UK price, best overall price, Betfair exchange, Dixon-Coles
+    ln_sd_{h,d,a}        spread (sd of log probability) across individual pre-match books
+    ln_nbooks            how many individual books priced the match
+    ln_*_overround       margins: Pinnacle, Bet365, market average
+    ln_kickoff_hour      kick-off hour where known (2019-20 on)
+    Targets (never features): mv_ps_{h,d,a} = log(Pinnacle close prob) - log(Pinnacle pre prob);
+    mv_zero = 0, the "no move" forecast.
+    """
+    def probs(stem: str) -> list[pl.Expr]:
+        cols = [pl.col(f"{stem}_{k}") for k in "hda"]
+        tot = sum(1.0 / c for c in cols)
+        return [(1.0 / c) / tot for c in cols]
+
+    exprs: list[pl.Expr] = []
+    names: list[str] = []
+    ps = probs("odds_ps")
+    for k, e in zip("hda", ps):
+        exprs.append(e.log().alias(f"ln_ps_{k}")); names.append(f"ln_ps_{k}")
+    for ref in LINE_REFS:
+        for k, e, base in zip("hda", probs(f"odds_{ref}"), ps):
+            exprs.append((e.log() - base.log()).alias(f"ln_{ref}_{k}")); names.append(f"ln_{ref}_{k}")
+    for k, base in zip("hda", ps):
+        exprs.append((pl.col(f"dc_{k}").log() - base.log()).alias(f"ln_dc_{k}")); names.append(f"ln_dc_{k}")
+    for ref in ("ps", "b365", "avg"):
+        exprs.append(pl.col(f"book_{ref}_overround").alias(f"ln_{ref}_overround")); names.append(f"ln_{ref}_overround")
+    exprs.append(pl.col("kickoff").str.slice(0, 2).cast(pl.Int32, strict=False).alias("ln_kickoff_hour")); names.append("ln_kickoff_hour")
+    for k, e in zip("hda", probs("odds_psc")):
+        exprs.append((e.log() - ps["hda".index(k)].log()).alias(f"mv_ps_{k}"))
+    exprs.append(pl.lit(0.0).alias("mv_zero"))
+    out = df.with_columns(exprs)
+
+    # dispersion across individual pre-match books (closing books end in "c"; exclude the reference and exchanges)
+    pre = sorted({c[3:-2] for c in df.columns if c.startswith("bk_") and c.endswith("_h")})
+    pre = [b for b in pre if not b.endswith("c") and b not in ("ps", "bfe")]
+    L = np.full((df.height, len(pre), 3), np.nan)
+    for j, b in enumerate(pre):
+        O = df.select([f"bk_{b}_{k}" for k in "hda"]).to_numpy().astype(np.float64)
+        q = 1.0 / O
+        L[:, j, :] = np.log(q / q.sum(axis=1, keepdims=True))
+    n = np.isfinite(L[:, :, 0]).sum(axis=1)
+    with np.errstate(invalid="ignore"), __import__("warnings").catch_warnings():
+        __import__("warnings").simplefilter("ignore", RuntimeWarning)
+        sd = np.nanstd(L, axis=1)
+    sd[n < 2] = np.nan
+    out = out.with_columns([pl.Series(f"ln_sd_{k}", sd[:, i]).fill_nan(None) for i, k in enumerate("hda")]
+                           + [pl.Series("ln_nbooks", n.astype(np.int64))])
+    names += ["ln_sd_h", "ln_sd_d", "ln_sd_a", "ln_nbooks"]
+    return out, names
+
+
 def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str]]:
     fcfg = dict(cfg.get("features") or {})
     k = float(fcfg.get("elo_k", 20)); home_adv = float(fcfg.get("elo_home_adv", 60)); hl = float(fcfg.get("ewm_half_life", 8))
@@ -275,6 +334,7 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
         (pl.col("a_rank") <= 4).cast(pl.Int8).alias("a_top4"),
         pl.when(pl.col("odds_source").str.contains("betfair")).then(1).otherwise(0).cast(pl.Int8).alias("book_is_exchange"),
     ]).drop("season_first")
+    out, line_names = _line(out)
 
     features = (
         [c for c in out.columns if c.startswith(("h_", "a_", "d_"))]
@@ -283,7 +343,8 @@ def build(df: pl.DataFrame, cfg: dict[str, Any]) -> tuple[pl.DataFrame, list[str
            *[f"{p}_{k}" for p in ("dc", "dcx") for k in ("h", "d", "a", "xg_home", "xg_away", "over25", "btts")],
            "n_teams_season", "month", "weekday", "days_into_season",
            "home_team", "away_team", "referee",
-           "book_h", "book_d", "book_a", "book_overround", "book_is_exchange"]
+           "book_h", "book_d", "book_a", "book_overround", "book_is_exchange",
+           *line_names]
     )
     features = list(dict.fromkeys(features))
     return out, features
@@ -356,6 +417,16 @@ _WHOLE = {
         ("over25", "probability of three or more goals."),
         ("btts", "probability that both teams score."),
     )},
+    **{f"ln_ps_{k}": f"Log of Pinnacle's pre-match {o} probability (margin removed). The starting point of the line model." for k, o in (("h", "home-win"), ("d", "draw"), ("a", "away-win"))},
+    **{f"ln_{r}_{k}": f"{rl} {o} probability minus Pinnacle's, both pre-match, in log units. Positive: {rl.split(' (')[0].lower()} rates the {o.split('-')[0]} side higher than Pinnacle does."
+       for r, rl in (("avg", "Market-average"), ("b365", "Bet365"), ("bestuk", "Best UK price (implied)"), ("max", "Best overall price (implied)"), ("bfe", "Betfair exchange"), ("dc", "Dixon-Coles"))
+       for k, o in (("h", "home-win"), ("d", "draw"), ("a", "away-win"))},
+    **{f"ln_sd_{k}": f"Disagreement between bookmakers on the {o} before kick-off: standard deviation of their log probabilities." for k, o in (("h", "home win"), ("d", "draw"), ("a", "away win"))},
+    "ln_nbooks": "Number of individual bookmakers that priced the match in the pre-match snapshot.",
+    "ln_ps_overround": "Pinnacle's pre-match margin (sum of implied probabilities).",
+    "ln_b365_overround": "Bet365's pre-match margin.",
+    "ln_avg_overround": "Market-average pre-match margin.",
+    "ln_kickoff_hour": "Kick-off hour (UK time), 2019-20 on.",
     "d_dc_xg": "Dixon-Coles (goals) expected goals, home minus away.",
     "d_dcx_xg": "Dixon-Coles (goals and xG blend) expected goals, home minus away.",
     "h2h_gd3": "Average goal difference from the home side's point of view over the last three meetings between these two teams, any venue. Missing if they have not met in the data.",

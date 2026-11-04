@@ -23,7 +23,7 @@ passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goa
 
 features:
   include: ["*"]
-  exclude: ["book_*", "dc_*", "dcx_*", "d_dc_xg", "d_dcx_xg", "home_team", "away_team", "referee"]
+  exclude: ["book_*", "ln_*", "dc_*", "dcx_*", "d_dc_xg", "d_dcx_xg", "home_team", "away_team", "referee"]
 
 split:
   strategy: walk_forward

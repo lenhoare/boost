@@ -99,3 +99,74 @@ disagrees with the market, the market is right. DC also does not predict
 which way prices move before kick-off (correlation with the pre-to-close
 move 0.00 to 0.06). **A good public-data goals model adds nothing to even
 the early price.**
+
+# Step 3: the line model (2026-11-04)
+
+football-data takes every bookmaker's pre-match price in one snapshot (Friday
+afternoon for weekend games, Tuesday for midweek) and the closing prices at
+kick-off. Pinnacle has both from 2012-13 to mid 2025-26 (5150 matches). How
+far does the price move, can we predict it, and is that worth anything?
+
+## What moves prices (correlation of each gap with the later move, H/D/A pooled)
+
+| move of | predictor (pre-match gap) | corr | share of gap closed |
+|---|---|---|---|
+| Bet365 | market average − Bet365 | +0.25 | 64% |
+| Bet365 | Pinnacle − Bet365 | +0.22 | 47% |
+| Pinnacle | market average − Pinnacle | +0.11 | 32% |
+| Pinnacle | Dixon-Coles − Pinnacle | +0.02 | 1% |
+| market average | Pinnacle − average | +0.01 | 3% |
+
+Soft books move towards the consensus; the consensus does not follow
+Pinnacle; our goals model predicts nothing. Typical move in the home-win
+probability: sd 2.6 points, more than 2 points in 40% of matches.
+
+## Line model (`line_move_{h,d,a}`, walk-forward from 2014-15, 4390 matches)
+
+Inputs (`ln_*` in `features.py`): every price in the snapshot relative to
+Pinnacle's, the spread across books, margins, kick-off hour, Dixon-Coles.
+Target: log(Pinnacle close) − log(Pinnacle pre) per outcome.
+
+- Out-of-sample R² of the move: home 0.1%, draw 1.0%, away 3.5%. A simple
+  linear rule on the market-average gap does about as well. Pinnacle's move is
+  almost entirely news that arrives after the snapshot (team news, lineups).
+- Predicted close on outcomes: 0.9567 against Pinnacle pre 0.9568 and
+  Pinnacle close 0.9539. It recovers 5% of the pre-to-close improvement (z −1.0).
+
+## As a bet selector (`analysis/line_eval.py`)
+
+Back the best-EV side at a pre-match price when EV > threshold. CLV is the
+expected profit if Pinnacle's close is the truth; it is far less noisy than
+results. The proportional de-vig overstates longshots, which inflates both EV
+and CLV on long odds, so every result was re-checked with the power de-vig.
+Only results that survive both are listed as real.
+
+| bet at | fair price | thr | bets | CLV (prop) | CLV (power) | ROI (power) |
+|---|---|---|---|---|---|---|
+| best UK pre | Pinnacle pre | 0.02 | 654–1081 | +4.8% [4.0, 5.5] | +2.8% [2.0, 3.5] | +0.9% [−14, +18] |
+| best UK pre | **predicted close** | 0.02 | 571–978 | +5.2% [4.4, 6.0] | **+3.9% [3.1, 4.7]** | +7.9% [−8, +25] |
+| best UK pre | Pinnacle pre | 0.05 | 182–473 | +7.0% [5.7, 8.4] | +4.6% [2.9, 6.3] | +9.5% [−27, +52] |
+| best UK pre | **predicted close** | 0.05 | 155–377 | +8.4% [6.9, 10.0] | **+5.8% [4.2, 7.5]** | +14% [−27, +64] |
+| Bet365 pre | predicted close | 0.00 | 550–813 | +2.1% [1.4, 2.8] | +0.4% [−0.2, +1.0] | +6.3% [−9, +22] |
+| Pinnacle pre | predicted close | 0.02 | 3–98 | +4.9% [2.2, 7.7] | −3.3% (3 bets) | — |
+
+(Bet counts differ between de-vig methods because the de-vig changes which
+sides show value.)
+
+## What this says
+
+1. **Real but modest: shopping the best UK price against Pinnacle's snapshot.**
+   Positive CLV in every era and under both de-vig methods; the line model
+   adds about 1 point of CLV on top of the plain rule. Returns are positive
+   but not yet distinguishable from zero: a few hundred bets a season at odds
+   of 5 to 8 need several seasons to confirm a 4% edge.
+2. **Not real: betting Bet365 alone, or betting Pinnacle itself.** Both looked
+   good under the proportional de-vig and vanished under the power de-vig.
+   The Pinnacle "edge" was longshot mispricing in the measurement, not in
+   the market.
+3. **The edge is shrinking.** Plain-rule CLV at best UK price (power de-vig)
+   fell from +1.6% in 2012-16 to +0.6% in 2022-26.
+4. **Practical caveats.** UK books restrict accounts that consistently beat
+   the close, and the snapshot time is football-data's, not one we can choose.
+   Collecting our own timestamped prices (and team news) is the way to make
+   this sharper and to test it live.

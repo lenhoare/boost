@@ -46,6 +46,11 @@ FD_AH = {
     "avg": ["Avg", "BbAv"], "avgc": ["AvgC"], "max": ["Max", "BbMx"], "maxc": ["MaxC"],
     "bfe": ["BFE"], "bfec": ["BFEC"],
 }
+# Mainstream UK-licensed bookmakers a bettor could open accounts with. "Best UK price" is the
+# max over whichever of these the season's file has. Excluded on purpose: PS (Pinnacle, the
+# sharp reference), BFE (exchange, commission), 1XB (offshore), Max/Avg (aggregates).
+UK_BOOKS = ["B365", "BW", "WH", "VC", "LB", "IW", "BV", "BMGM", "BFD", "BF", "SKB", "PP", "GB", "SJ", "BS", "SB"]
+
 # football-data team name -> ours, where lowercase-and-underscore is not enough
 FD_TEAMS = {"Man United": "man_utd", "Nott'm Forest": "nottingham_forest", "Sheffield United": "sheffield_utd"}
 
@@ -163,13 +168,25 @@ def _read_football_data(folder: Path) -> pl.DataFrame:
             ch, ca = _first(d, pre, "AHH"), _first(d, pre, "AHA")
             cols.append((_num(d, ch) if ch else pl.lit(None, dtype=pl.Float64)).alias(f"ah_{name}_h"))
             cols.append((_num(d, ca) if ca else pl.lit(None, dtype=pl.Float64)).alias(f"ah_{name}_a"))
+        # every individual bookmaker's 1X2 triple, pre-match and closing: bk_<code>_{h,d,a}
+        books = sorted({c[:-1] for c in d.columns if len(c) > 1 and c.endswith("H") and c[:-1] + "D" in d.columns and c[:-1] + "A" in d.columns
+                        and not c.startswith(("Bb", "Max", "Avg")) and c[:-1].isalnum()})
+        for b in books:
+            for side in "HDA":
+                cols.append(_num(d, b + side).alias(f"bk_{b.lower()}_{side.lower()}"))
         frames.append(d.select(cols))
-    fd = pl.concat(frames, how="vertical_relaxed")
+    fd = pl.concat(frames, how="diagonal_relaxed")   # bookmaker columns differ by season
     fix = lambda c: pl.col(c).replace_strict(FD_TEAMS, default=pl.col(c).str.to_lowercase().str.replace_all(" ", "_"))  # noqa: E731
     fd = fd.with_columns(fix("fd_home").alias("home_team"), fix("fd_away").alias("away_team")).drop(["fd_home", "fd_away"])
     # dummy / missing prices: anything at or below 1.01 is not a real price
-    price = [c for c in fd.columns if c.startswith(("odds_", "ou_", "ah_")) and not c.startswith("ah_line")]
+    price = [c for c in fd.columns if c.startswith(("odds_", "ou_", "ah_", "bk_")) and not c.startswith("ah_line")]
     fd = fd.with_columns([pl.when(pl.col(c) > 1.01).then(pl.col(c)).alias(c) for c in price])
+    # best price over mainstream UK books, pre-match and closing, and how many books fed it
+    for suffix, tag in (("", "bestuk"), ("c", "bestukc")):
+        names = [b.lower() + suffix for b in UK_BOOKS if f"bk_{b.lower() + suffix}_h" in fd.columns]
+        for side in "hda":
+            fd = fd.with_columns(pl.max_horizontal([pl.col(f"bk_{n}_{side}") for n in names]).alias(f"odds_{tag}_{side}"))
+        fd = fd.with_columns(pl.sum_horizontal([pl.col(f"bk_{n}_h").is_not_null().cast(pl.Int8) for n in names]).alias(f"n_{tag}"))
     if fd.select(["date", "home_team", "away_team"]).is_duplicated().any():
         raise ValueError("duplicate (date, home, away) in football-data files")
     return fd

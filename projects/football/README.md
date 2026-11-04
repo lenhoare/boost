@@ -28,6 +28,16 @@ Three questions (from the original brief):
 | `result_1x2_offset_wf_strict` | same, with two seasons for early stopping and heavier regularisation. |
 | `result_1x2_offset_pre_wf` | strict offset from the Bet365 pre-match price in every season (a consistent, softer bar). |
 
+| `result_1x2_dc_wf` | histories plus the Dixon-Coles goals model as features. |
+| `result_1x2_dc_offset_wf` | start from Dixon-Coles, learn a correction from histories. |
+| `result_1x2_offset_pre_dc_wf` | start from Bet365 pre-match, learn a correction from Dixon-Coles only. |
+| `line_move_h`, `_d`, `_a` | line model: predict Pinnacle's move from the pre-match snapshot to the close. Evaluate with `analysis/line_eval.py`. |
+
+`goals_model.py` is the Dixon-Coles model behind the `dc_*` features.
+`analysis/blend.py` tests whether a forecast adds anything to a price;
+`analysis/line_eval.py` turns the three line models into a predicted close
+and tests it on outcomes and as a bet selector.
+
 Every model has `seeds: 5` and a `compare:` block scoring it against Bet365,
 Pinnacle and market-average prices, pre-match and closing, plus Betfair closing.
 `measurement.md` has the results.
