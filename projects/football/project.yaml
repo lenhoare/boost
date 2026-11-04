@@ -3,6 +3,7 @@ name: football
 data:
   module: data/prepare.py          # prepare(project_dir, cfg) -> DataFrame
   source: data/combined.csv
+  football_data: data/football-data   # E0_<yy><yy>.csv per season; all price sets joined on (date, home, away)
   prepared: data/prepared.parquet
 
 features:
@@ -12,6 +13,10 @@ features:
   elo_home_adv: 60                 # rating points added to the home side for expectation
   ewm_half_life: 8                 # matches; for exponentially weighted form
   elo_goals_k: 0.05                # step for the goals-scored / goals-conceded ratings (log-goal units)
+  goals_model:                     # Dixon-Coles, refitted before every match date (goals_model.py)
+    half_life_days: 500            # time decay of past matches; chosen on 2011-12..2013-14 only
+    ridge: 5.0                     # shrinkage towards 0 (or the newcomer mean for promoted clubs)
+    xg_weight: 0.5                 # dcx_* variant: target = 0.5 xG + 0.5 goals where xG exists
 
 evaluation:
   module: evaluate.py              # evaluate(ctx) -> list[Section]; betting analysis

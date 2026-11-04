@@ -25,6 +25,12 @@ Three questions (from the original brief):
 | `result_1x2_book` | book prices as ordinary features alongside histories. |
 | `result_1x2_offset` | start from the book's log-odds, learn a correction. The direct test of question 2. |
 | `result_1x2_offset_wf` | the offset test season by season. |
+| `result_1x2_offset_wf_strict` | same, with two seasons for early stopping and heavier regularisation. |
+| `result_1x2_offset_pre_wf` | strict offset from the Bet365 pre-match price in every season (a consistent, softer bar). |
+
+Every model has `seeds: 5` and a `compare:` block scoring it against Bet365,
+Pinnacle and market-average prices, pre-match and closing, plus Betfair closing.
+`measurement.md` has the results.
 
 ## Reading a run page
 

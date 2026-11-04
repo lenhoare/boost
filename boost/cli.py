@@ -35,7 +35,6 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "features":
         frame, names = build_features(project, force=args.force)
         print(f"{frame.height} rows, {len(names)} features -> {project.features_path}")
-        nulls = frame.select([(frame[n].null_count() / frame.height) for n in names])
         for n in names:
             s = frame[n]
             print(f"  {n:34s} {str(s.dtype):12s} null {s.null_count() / frame.height:5.1%}")

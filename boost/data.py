@@ -53,7 +53,10 @@ def _cache_fresh(project: Project) -> bool:
     sources = [project.prepared_path]
     rel = (project.cfg.get("features") or {}).get("module")
     if rel:
-        sources.append(project.path(str(rel)))
+        mod = project.path(str(rel))
+        sources.append(mod)
+        sources += [p for p in mod.parent.glob("*.py") if p != mod]   # helpers the features module imports
+    sources.append(project.dir / "project.yaml")                       # feature knobs live there
     return all(s.exists() and s.stat().st_mtime <= stamp for s in sources)
 
 

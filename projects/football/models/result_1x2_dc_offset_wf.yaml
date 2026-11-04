@@ -1,0 +1,47 @@
+# Start from the Dixon-Coles probabilities and learn a correction from team histories (strict settings).
+description: >-
+  Starts from the Dixon-Coles goals model's probabilities and lets the booster learn a correction from team histories. Asks whether form, Elo and the rest add anything to a good goals model.
+
+
+task:
+  type: multiclass
+  target: ftr
+  classes: [H, D, A]
+
+baseline: [dc_h, dc_d, dc_a]                 # offset: start from our goals model
+compare:                                  # extra bars, each scored like for like on the rows where it exists
+  b365_pre: [book_b365_h, book_b365_d, book_b365_a]        # Bet365, Friday/Tuesday price, all seasons
+  pinnacle_pre: [book_ps_h, book_ps_d, book_ps_a]          # 2012-13 to mid 2025-26
+  avg_pre: [book_avg_h, book_avg_d, book_avg_a]            # market average, all seasons
+  pinnacle_close: [book_psc_h, book_psc_d, book_psc_a]     # sharpest bar; 2012-13 to mid 2025-26
+  b365_close: [book_b365c_h, book_b365c_d, book_b365c_a]   # 2019-20 on
+  avg_close: [book_avgc_h, book_avgc_d, book_avgc_a]       # 2019-20 on
+  betfair_close: [book_bfec_h, book_bfec_d, book_bfec_a]   # 2024-25 on
+  dixon_coles: [dc_h, dc_d, dc_a]                          # our goals model on its own
+offset: true                              # init_score = log(baseline probabilities)
+passthrough: [odds_home, odds_draw, odds_away, odds_source, home_goals, away_goals]
+
+features:
+  include: ["*"]
+  exclude: ["book_*", "dc_*", "dcx_*", "d_dc_xg", "d_dcx_xg", "home_team", "away_team", "referee"]
+
+split:
+  strategy: walk_forward
+  min_periods: 4
+  valid_periods: 2
+
+model:
+  library: lightgbm
+  rounds: 3000
+  early_stopping: 300
+  refit: true
+  seeds: 5                                # average 5 seeds; also reports single-seed spread
+  params:
+    learning_rate: 0.003
+    num_leaves: 4
+    min_data_in_leaf: 200
+    feature_fraction: 0.6
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 50.0
+    seed: 7

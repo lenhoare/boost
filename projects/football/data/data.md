@@ -25,6 +25,56 @@ Moon phase: leave out for now.
 - Parses goal timings into `home_goals_ht`, `away_goals_ht` (minute 45 and stoppage count as first half), `first_goal_minute`, `first_goal_side`. Not used by the current models; there for later timing targets.
 - Renames `home_prematch_xg/ppg` to `home_xg_pre`, `home_ppg_pre` (same for away).
 
+## Sources
+
+`combined.csv` is FootyStats (xG, pre-match xG/PPG, goal timings, venue,
+attendance, referee) plus one football-data.co.uk price set per match. The full
+football-data files are in `data/football-data/E0_<yy><yy>.csv` (downloaded
+2026-11-04 from `https://www.football-data.co.uk/mmz4281/<yy><yy>/E0.csv`).
+`prepare.py` joins them on (date, home, away). All 6120 rows match, and the
+single `odds_home` price equals the football-data column its `odds_source`
+names on 100% of rows: `B365H` to 2018-19, `B365CH` 2019-20 to 2023-24,
+`BFECH` from 2024-25. That price is not a closing price before 2019-20:
+football-data collects pre-match prices on Friday afternoon for weekend
+games and Tuesday for midweek ones.
+
+Extra columns from football-data (sets: `b365`, `b365c` Bet365 pre-match /
+closing; `ps`, `psc` Pinnacle; `avg`, `avgc` market average; `max`, `maxc`
+best available; `bfe`, `bfec` Betfair exchange):
+
+- `odds_<set>_{h,d,a}` raw 1X2 prices; `book_<set>_{h,d,a}` de-vigged
+  (proportional), `book_<set>_overround`. No `book_max*`: best price across
+  books is not one market.
+- `ou_<set>_{over,under}` over/under 2.5 goals prices; `p_<set>_over25` de-vigged.
+- `ah_line`, `ah_line_c` Asian handicap line for the home side (pre-match,
+  closing); `ah_<set>_{h,a}` prices.
+- `kickoff` time, 2019-20 on.
+
+Before 2019-20 `avg`/`max` are Betbrain's (`BbAvH`, `BbMxH`) and there are no
+closing prices except Pinnacle. Prices at or below 1.01 are nulled.
+
+| set | seasons present |
+|---|---|
+| `b365`, `avg`, `max`, O/U, AH | all |
+| `ps`, `psc` | 2012-13 to mid 2025-26 (55% of 2025-26; Pinnacle feed stopped) |
+| `b365c`, `avgc`, `maxc`, closing O/U and AH | 2019-20 on |
+| `bfe`, `bfec` | 2024-25 on |
+
+Bookmaker logloss over identical matches (lower is sharper):
+
+| seasons | b365 | b365c | ps | psc | avg | avgc |
+|---|---|---|---|---|---|---|
+| 2012-13 to 2018-19 (2660) | 0.9494 | | 0.9488 | **0.9466** | 0.9493 | |
+| 2019-20 to 2023-24 (1900) | 0.9586 | **0.9535** | 0.9578 | **0.9535** | 0.9576 | 0.9537 |
+| 2024-25 to 2025-26 (760) | 0.9947 | 0.9904 | | | 0.9929 | **0.9893** |
+
+Pre-match to close is worth 0.003 to 0.005 of logloss within every book. That
+is the size of edge an early-price model is trying to find.
+
+None of these columns are model features: `features.py` lists features
+explicitly, and the de-vigged sets are named `book_*` so the default
+`exclude: ["book_*"]` would catch them anyway.
+
 ## Leak audit
 
 - `home_ppg` / `away_ppg`: constant within every team-season (340 of 340). That is the season-final points per game and would leak the season's results into every match. Dropped.
